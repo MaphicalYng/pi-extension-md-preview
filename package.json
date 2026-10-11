@@ -1,0 +1,27 @@
+{
+	"name": "pi-extension-md-preview",
+	"version": "0.1.0",
+	"description": "Pi extension: render Markdown files as polished web pages with an auto-exiting preview server",
+	"type": "module",
+	"keywords": ["pi-package", "markdown", "preview", "report"],
+	"license": "MIT",
+	"pi": {
+		"extensions": ["./extensions/md-preview/index.ts"]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"dependencies": {
+		"marked": "^15.0.12"
+	},
+	"devDependencies": {
+		"@types/node": "^24.0.0",
+		"typescript": "^5.8.0"
+	},
+	"scripts": {
+		"check": "node scripts/check.mjs",
+		"demo": "node scripts/demo.mjs"
+	}
+}

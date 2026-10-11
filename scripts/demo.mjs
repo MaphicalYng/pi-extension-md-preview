@@ -1,0 +1,152 @@
+#!/usr/bin/env node
+/**
+ * Standalone demo / smoke test for the preview stack (render + page + server),
+ * runnable without a Pi session:
+ *
+ *   npm run demo            # render a sample report and open it in the browser
+ *   npm run demo -- --smoke # headless smoke test: compile, serve, verify, exit
+ *
+ * The demo compiles the extension's host-independent modules to CommonJS under
+ * .demo/build (the real extension is loaded directly from TypeScript by Pi).
+ */
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const smoke = process.argv.includes("--smoke") || process.env.MD_PREVIEW_SMOKE === "1";
+
+const SAMPLE_REPORT = `# md-preview 示例报告
+
+> 本文件由 \`scripts/demo.mjs\` 生成，用于演示预览页面的排版效果。
+
+## 执行摘要
+
+本季度基础设施迁移完成度达到 **87%**，核心链路平均延迟下降 *31%*。剩余工作集中在
+离线任务与数据回填，详见 [附录](./sample-appendix.md)。
+
+### 关键指标
+
+| 指标 | 迁移前 | 迁移后 | 变化 |
+| --- | ---: | ---: | ---: |
+| P99 延迟 | 840 ms | 580 ms | -31% |
+| 错误率 | 0.42% | 0.11% | -74% |
+| 单位成本 | ¥1.80 | ¥1.20 | -33% |
+
+### 主要动作
+
+1. 将会话存储切换到分区表，热点查询走覆盖索引。
+2. 引入两级缓存，命中率稳定在 92% 左右。
+3. 重构重试策略，采用带抖动的指数退避。
+
+- [x] 存储层迁移
+- [x] 缓存引入
+- [ ] 离线任务切换（预计下季度）
+
+## 技术细节
+
+热点路径的重试逻辑如下：
+
+\`\`\`typescript
+export async function withRetry<T>(fn: () => Promise<T>, attempts = 5): Promise<T> {
+  let error: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      error = err;
+      await sleep(Math.min(1000 * 2 ** i, 8000) * (0.5 + Math.random()));
+    }
+  }
+  throw error;
+}
+\`\`\`
+
+> [!NOTE]
+> 上限 8 秒的退避窗口是基于现网重放数据确定的。
+
+## 下一步计划
+
+- 优先级 P0：完成离线任务切换（预计 3 人周）。
+- 优先级 P1：为缓存增加一致性校验作业。
+- 参考外部资料：[TypeBox](https://github.com/sinclairzx81/typebox)。
+`;
+
+const SAMPLE_APPENDIX = `# 附录：数据来源
+
+所有指标来自生产环境监控（7 日滑动窗口），原始数据见离线数仓 \`dwd_infra_latency\`。
+
+返回 [示例报告](./sample-report.md)。
+`;
+
+/* 1. Compile the host-independent modules. */
+execFileSync(join(root, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.demo.json"], {
+	cwd: root,
+	stdio: "inherit",
+});
+
+/* 2. Mark the compiled output as CommonJS (root package.json is type: module). */
+const buildDir = join(root, ".demo", "build");
+writeFileSync(join(buildDir, "package.json"), '{"type":"commonjs"}\n', "utf8");
+
+/* 3. Write demo content. */
+const demoDir = join(root, ".demo");
+mkdirSync(demoDir, { recursive: true });
+const report = join(demoDir, "sample-report.md");
+const appendix = join(demoDir, "sample-appendix.md");
+if (!existsSync(report)) writeFileSync(report, SAMPLE_REPORT, "utf8");
+if (!existsSync(appendix)) writeFileSync(appendix, SAMPLE_APPENDIX, "utf8");
+
+/* 4. Start the preview server against the sample report. */
+const require = createRequire(import.meta.url);
+const { ensureServer } = require(join(root, ".demo", "build", "server.js"));
+const { openBrowser } = require(join(root, ".demo", "build", "browser.js"));
+
+const server = await ensureServer();
+const handle = await server.openDocument(report, { cwd: demoDir, title: "md-preview 示例报告" });
+console.log(`预览页面：${handle.url}`);
+
+if (smoke) {
+	const failures = [];
+	const page = await fetch(handle.url);
+	const html = await page.text();
+	if (!page.ok) failures.push(`GET /doc -> ${page.status}`);
+	if (!html.includes("md-preview 示例报告")) failures.push("页面缺少标题");
+	if (!html.includes("执行摘要")) failures.push("页面缺少正文渲染结果");
+	if (!html.includes("toc")) failures.push("页面缺少目录结构");
+
+	const index = await fetch(`http://127.0.0.1:${server.port}/`);
+	if (!index.ok) failures.push(`GET / -> ${index.status}`);
+
+	const events = await fetch(`${handle.url}/events?c=smoke`);
+	let stream = "";
+	if (events.ok && events.body) {
+		const reader = events.body.getReader();
+		const decoder = new TextDecoder();
+		for (let i = 0; i < 3 && !stream.includes("event: init"); i++) {
+			const chunk = await reader.read();
+			if (chunk.done) break;
+			stream += decoder.decode(chunk.value);
+		}
+		await reader.cancel();
+	}
+	if (!events.ok || !stream.includes("retry:") || !stream.includes("event: init")) failures.push("SSE 端点异常");
+
+	await server.shutdown("smoke 完成");
+	if (failures.length) {
+		console.error("smoke 失败：");
+		for (const f of failures) console.error(`  - ${f}`);
+		process.exit(1);
+	}
+	console.log("smoke 通过：页面渲染、目录、SSE 实时更新端点均正常。");
+	process.exit(0);
+}
+
+if (process.env.MD_PREVIEW_NO_BROWSER === "1") {
+	console.log("(MD_PREVIEW_NO_BROWSER=1，未打开浏览器)");
+} else {
+	openBrowser(handle.url);
+}
+console.log("关闭浏览器标签页后预览服务会自动退出；按 Ctrl+C 可提前手动停止。");

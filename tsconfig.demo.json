@@ -1,0 +1,18 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "CommonJS",
+		"moduleResolution": "node",
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"outDir": ".demo/build",
+		"rootDir": "extensions/md-preview",
+		"types": ["node"]
+	},
+	"include": [
+		"extensions/md-preview/render.ts",
+		"extensions/md-preview/page.ts",
+		"extensions/md-preview/server.ts",
+		"extensions/md-preview/browser.ts"
+	]
+}

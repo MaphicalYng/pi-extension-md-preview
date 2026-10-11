@@ -1,0 +1,24 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"lib": ["ES2022"],
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true,
+		"noFallthroughCasesInSwitch": true,
+		"forceConsistentCasingInFileNames": true,
+		"isolatedModules": true,
+		"verbatimModuleSyntax": true,
+		"skipLibCheck": true,
+		"noEmit": true,
+		"types": ["node"],
+		"baseUrl": ".",
+		"paths": {
+			"@earendil-works/*": ["./types/host/*"],
+			"typebox": ["./types/host/typebox"]
+		}
+	},
+	"include": ["extensions/**/*.ts"]
+}
