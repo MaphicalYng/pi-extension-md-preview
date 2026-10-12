@@ -103,6 +103,7 @@ if (!existsSync(appendix)) writeFileSync(appendix, SAMPLE_APPENDIX, "utf8");
 const require = createRequire(import.meta.url);
 const { ensureServer } = require(join(root, ".demo", "build", "server.js"));
 const { openBrowser } = require(join(root, ".demo", "build", "browser.js"));
+const { renderMarkdown } = require(join(root, ".demo", "build", "render.js"));
 
 const server = await ensureServer();
 const handle = await server.openDocument(report, { cwd: demoDir, title: "md-preview 示例报告" });
@@ -116,6 +117,11 @@ if (smoke) {
 	if (!html.includes("md-preview 示例报告")) failures.push("页面缺少标题");
 	if (!html.includes("执行摘要")) failures.push("页面缺少正文渲染结果");
 	if (!html.includes("toc")) failures.push("页面缺少目录结构");
+
+	// raw HTML 必须按转义文本显示（README 契约）：回归 XSS 弹窗问题。
+	const probe = renderMarkdown('裸文本 <script>alert("xss")</script> 与 <img src=x onerror=alert(1)>');
+	if (probe.html.includes("<script") || probe.html.includes("<img")) failures.push("raw HTML 未被转义（存在可执行标签）");
+	if (!probe.html.includes("&lt;script&gt;")) failures.push("raw HTML 未按转义文本显示");
 
 	const index = await fetch(`http://127.0.0.1:${server.port}/`);
 	if (!index.ok) failures.push(`GET / -> ${index.status}`);
@@ -140,7 +146,7 @@ if (smoke) {
 		for (const f of failures) console.error(`  - ${f}`);
 		process.exit(1);
 	}
-	console.log("smoke 通过：页面渲染、目录、SSE 实时更新端点均正常。");
+	console.log("smoke 通过：页面渲染、目录、SSE 实时更新、raw HTML 转义均正常。");
 	process.exit(0);
 }
 

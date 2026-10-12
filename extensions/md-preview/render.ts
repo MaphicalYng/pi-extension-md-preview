@@ -85,6 +85,11 @@ export function renderMarkdown(source: string, options: RenderOptions = {}): Ren
 
 	md.use({
 		renderer: {
+			// Raw embedded HTML (block or inline) is rendered as escaped text per the
+			// README contract — preview pages never execute document-supplied markup.
+			html(token: Tokens.HTML | Tokens.Tag) {
+				return escapeHtml(token.text);
+			},
 			heading(this: { parser: { parseInline(tokens: Tokens.Heading["tokens"]): string } }, token: Tokens.Heading) {
 				const inner = this.parser.parseInline(token.tokens);
 				const plain = stripTags(inner);
