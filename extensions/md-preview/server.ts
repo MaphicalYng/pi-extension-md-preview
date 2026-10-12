@@ -115,6 +115,11 @@ export class PreviewServer {
 	/** Register (or reuse) a document and return its preview handle. */
 	async openDocument(filePath: string, opts: { cwd?: string; title?: string } = {}): Promise<PreviewHandle> {
 		const abs = path.resolve(filePath);
+		// A freshly requested document gives a browser tab a new chance to
+		// connect: restart the no-viewer grace windows so the sweep cannot shut
+		// the server down in the middle of this call.
+		this.startedAt = Date.now();
+		this.noViewerSince = null;
 		if (opts.cwd) this.roots.add(path.resolve(opts.cwd));
 		const existing = this.byPath.get(abs);
 		if (existing) {
@@ -547,11 +552,19 @@ export function ensureServer(onShutdown?: (reason: string) => void): Promise<Pre
 	if (instance && instance.isOpen) return Promise.resolve(instance);
 	if (!starting) {
 		const server = new PreviewServer(onShutdown);
-		starting = server.start().then(() => {
+		const boot = server.start().then(() => {
 			instance = server;
 			return server;
 		});
-		starting.catch(() => (starting = null));
+		starting = boot;
+		// Release the boot guard once it settles. Clearing it only on failure
+		// (the old behavior) kept a resolved promise around forever, so every
+		// call after the server auto-exited got the dead instance back and the
+		// browser hit ERR_CONNECTION_REFUSED on the closed port.
+		const settle = () => {
+			if (starting === boot) starting = null;
+		};
+		boot.then(settle, settle);
 	}
 	return starting;
 }
