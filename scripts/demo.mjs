@@ -179,7 +179,7 @@ if (smoke) {
 	}
 	if (!events.ok || !stream.includes("retry:") || !stream.includes("event: init")) failures.push("SSE 端点异常");
 
-	// ---------- 用户级偏好（主题/字号全局持久化） ----------
+	// ---------- 用户级偏好（主题/字号/行距全局持久化） ----------
 	const prefsEndpoint = `http://127.0.0.1:${server.port}/prefs`;
 	const postPrefs = async (data) => {
 		const res = await fetch(prefsEndpoint, {
@@ -195,7 +195,7 @@ if (smoke) {
 	if (!prefs0.ok) failures.push(`GET /prefs -> ${prefs0.status}`);
 	else {
 		const body = await prefs0.json();
-		if (body.theme !== null || body.scale !== null) failures.push("初始 /prefs 应为空偏好");
+		if (body.theme !== null || body.scale !== null || body.lineHeight !== null) failures.push("初始 /prefs 应为空偏好");
 	}
 
 	// 合法值：合并保存。
@@ -204,33 +204,46 @@ if (smoke) {
 		failures.push(`POST /prefs 合法值异常：${post1.status} ${JSON.stringify(post1.body)}`);
 	}
 
+	// 合法行距：只更新 lineHeight，其他键不受影响。
+	const post1b = await postPrefs({ lineHeight: 1.9 });
+	if (post1b.status !== 200 || post1b.body?.lineHeight !== 1.9 || post1b.body?.theme !== "dark" || post1b.body?.scale !== 1.25) {
+		failures.push(`POST /prefs 行距合法值异常：${post1b.status} ${JSON.stringify(post1b.body)}`);
+	}
+
 	// 落盘防抖 200ms：等一拍再取页面，serveDoc 读取的是磁盘上的已落盘偏好。
 	await new Promise((r) => setTimeout(r, 300));
 	const prefsFile = join(tmpConfig, "md-preview", "settings.json");
 	if (!existsSync(prefsFile)) failures.push("偏好文件未写入 XDG_CONFIG_HOME");
 
-	// 页面注入：重新渲染的文档应携带用户级主题与字号。
+	// 页面注入：重新渲染的文档应携带用户级主题、字号与行距。
 	const page2 = await fetch(handle.url);
 	const html2 = page2.ok ? await page2.text() : "";
 	if (!page2.ok) failures.push(`GET /doc（二次）-> ${page2.status}`);
 	if (!html2.includes('data-theme-hint="dark"')) failures.push("页面未注入用户级主题");
 	if (!html2.includes('data-pref-scale="1.25"')) failures.push("页面未注入用户级字号");
+	if (!html2.includes('data-pref-line-height="1.9"')) failures.push("页面未注入用户级行距");
 	if (!html2.includes('"/prefs"')) failures.push("页面缺少 prefsUrl 端点");
 
-	// 部分更新保留另一键；越界字号被钳制；非法值被忽略；显式 null 重置。
+	// 部分更新保留其他键；越界字号/行距被钳制；非法值被忽略；显式 null 重置。
 	const post2 = await postPrefs({ theme: "light" });
-	if (post2.body?.theme !== "light" || post2.body?.scale !== 1.25) failures.push("部分更新未保留 scale");
+	if (post2.body?.theme !== "light" || post2.body?.scale !== 1.25 || post2.body?.lineHeight !== 1.9) failures.push("部分更新未保留 scale/lineHeight");
 	const post3 = await postPrefs({ scale: 99 });
 	if (post3.body?.scale !== 1.6) failures.push(`scale 未钳制到 1.6：${post3.body?.scale}`);
+	const post3b = await postPrefs({ lineHeight: 9.99 });
+	if (post3b.body?.lineHeight !== 2.2) failures.push(`lineHeight 未钳制到 2.2：${post3b.body?.lineHeight}`);
 	const post4 = await postPrefs({ theme: "neon", scale: "huge" });
-	if (post4.body?.theme !== "light" || post4.body?.scale !== 1.6) failures.push("非法值未被忽略");
+	if (post4.body?.theme !== "light" || post4.body?.scale !== 1.6 || post4.body?.lineHeight !== 2.2) failures.push("非法值未被忽略");
+	const post4b = await postPrefs({ lineHeight: "wide" });
+	if (post4b.body?.lineHeight !== 2.2) failures.push("非法行距未被忽略");
 	const post5 = await postPrefs({ theme: null });
 	if (post5.body?.theme !== null || post5.body?.scale !== 1.6) failures.push("显式 null 未重置 theme");
+	const post5b = await postPrefs({ lineHeight: null });
+	if (post5b.body?.lineHeight !== null) failures.push("显式 null 未重置 lineHeight");
 
 	// GET 校验最终落盘内容（等防抖落盘）。
 	await new Promise((r) => setTimeout(r, 300));
 	const prefsFinal = await (await fetch(prefsEndpoint)).json();
-	if (prefsFinal.theme !== null || prefsFinal.scale !== 1.6) failures.push(`落盘偏好异常：${JSON.stringify(prefsFinal)}`);
+	if (prefsFinal.theme !== null || prefsFinal.scale !== 1.6 || prefsFinal.lineHeight !== null) failures.push(`落盘偏好异常：${JSON.stringify(prefsFinal)}`);
 
 	// ---------- 选中提问（ask → SSE → answer） ----------
 	const askBody = { quote: "核心链路平均延迟下降", question: "下降的主要原因是什么？" };

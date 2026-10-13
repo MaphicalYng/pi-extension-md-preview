@@ -35,6 +35,8 @@ export interface PageOptions {
 	themeHint?: "system" | "light" | "dark";
 	/** User-level persisted font scale (0.7–1.6), served from the prefs file; null/undefined = 未设置。 */
 	prefScale?: number | null;
+	/** User-level persisted line height (1.4–2.2), served from the prefs file; null/undefined = 未设置。 */
+	prefLineHeight?: number | null;
 	/** POST endpoint that persists theme/scale changes into the user-level prefs file. */
 	prefsUrl?: string;
 	/** POST endpoint that submits a question about selected text (选中提问). */
@@ -48,8 +50,8 @@ export interface PageOptions {
 const THEME_BOOT = `<script>
 (function () {
 	var d = document.documentElement;
-	var t = null, s = null;
-	try { t = localStorage.getItem("mdp.theme"); s = localStorage.getItem("mdp.scale"); } catch (e) {}
+	var t = null, s = null, lh = null;
+	try { t = localStorage.getItem("mdp.theme"); s = localStorage.getItem("mdp.scale"); lh = localStorage.getItem("mdp.lineHeight"); } catch (e) {}
 	// 主题优先级：本机 localStorage（同端口内最近一次操作）> hint——服务端渲染
 	// 时已把用户级偏好文件合并进 hint（用户偏好 > MD_PREVIEW_THEME 环境变量），
 	// 再往下回退跟随系统。
@@ -66,6 +68,12 @@ const THEME_BOOT = `<script>
 		if (ps > 0) s = String(ps);
 	}
 	if (s) d.style.setProperty("--font-scale", s);
+	// 行距优先级同字号：本机 localStorage > 服务端下发的用户级偏好（data-pref-line-height）。
+	if (!(parseFloat(lh) > 0)) {
+		var plh = parseFloat(d.getAttribute("data-pref-line-height") || "");
+		if (plh > 0) lh = String(plh);
+	}
+	if (lh) d.style.setProperty("--line-height", lh);
 })();
 </script>`;
 
@@ -74,6 +82,7 @@ const PAGE_CSS = `
 
 :root {
 	--font-scale: 1;
+	--line-height: 1.75;
 	--font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
 		"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
 	--font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
@@ -135,7 +144,7 @@ body {
 	color: var(--text);
 	font-family: var(--font-sans);
 	font-size: calc(16px * var(--font-scale));
-	line-height: 1.75;
+	line-height: var(--line-height);
 	transition: background-color 0.25s var(--ease), color 0.25s var(--ease);
 	-webkit-font-smoothing: antialiased;
 	text-rendering: optimizeLegibility;
@@ -879,6 +888,26 @@ const PAGE_JS = `
 	// 初始 setScale 延后到 boot 阶段调用：此时「选中提问」区块的 qaRail 等变量已就绪，
 	// 否则 setScale → layoutQaCards 会在 qaRail 赋值前执行（依赖 layoutQaCards 自身守卫兜底）。
 
+	/* ---------- line height ---------- */
+
+	var LINE_MIN = 1.4, LINE_MAX = 2.2, LINE_STEP = 0.15, LINE_DEFAULT = 1.75;
+	var lineHeightValue = document.getElementById("lineHeightValue");
+	var lineHeight = parseFloat(root.style.getPropertyValue("--line-height") || String(LINE_DEFAULT));
+	if (!isFinite(lineHeight) || lineHeight <= 0) lineHeight = LINE_DEFAULT;
+	// setLineHeight 自包含（不依赖 layoutQaCards 等外部函数），boot 前调用也安全。
+	function setLineHeight(v) {
+		lineHeight = Math.min(LINE_MAX, Math.max(LINE_MIN, Math.round(v * 100) / 100));
+		root.style.setProperty("--line-height", String(lineHeight));
+		try { localStorage.setItem("mdp.lineHeight", String(lineHeight)); } catch (e) {}
+		savePrefs({ lineHeight: lineHeight });
+		lineHeightValue.textContent = lineHeight.toFixed(2);
+	}
+	document.getElementById("lineHeightMinus").addEventListener("click", function () { setLineHeight(lineHeight - LINE_STEP); });
+	document.getElementById("lineHeightPlus").addEventListener("click", function () { setLineHeight(lineHeight + LINE_STEP); });
+	lineHeightValue.addEventListener("click", function () { setLineHeight(LINE_DEFAULT); });
+	lineHeightValue.style.cursor = "pointer";
+	lineHeightValue.title = "点击恢复默认";
+
 	/* ---------- toast ---------- */
 
 	var toastEl = document.getElementById("toast");
@@ -1548,6 +1577,7 @@ const PAGE_JS = `
 	/* ---------- boot ---------- */
 
 	setScale(scale);
+	setLineHeight(lineHeight);
 	buildToc(DOC.toc || []);
 	enhanceCode(document);
 	renderMermaidBlocks(document);
@@ -1571,13 +1601,14 @@ function icon(name: string): string {
 }
 
 export function renderPage(options: PageOptions): string {
-	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefsUrl, askUrl, qa, version } = options;
+	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefLineHeight, prefsUrl, askUrl, qa, version } = options;
 	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, qa: qa ?? [] }).replace(/</g, "\\u003c");
 	const hintAttr = themeHint ? ` data-theme-hint="${escapeHtml(themeHint)}"` : "";
 	const scaleAttr = typeof prefScale === "number" && isFinite(prefScale) ? ` data-pref-scale="${prefScale}"` : "";
+	const lineHeightAttr = typeof prefLineHeight === "number" && isFinite(prefLineHeight) ? ` data-pref-line-height="${prefLineHeight}"` : "";
 
 	return `<!doctype html>
-<html lang="zh-CN"${hintAttr}${scaleAttr}>
+<html lang="zh-CN"${hintAttr}${scaleAttr}${lineHeightAttr}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1609,6 +1640,11 @@ ${THEME_BOOT}
 				<button type="button" id="fontMinus" title="减小字号" aria-label="减小字号">A&minus;</button>
 				<span id="fontValue">100%</span>
 				<button type="button" id="fontPlus" title="增大字号" aria-label="增大字号">A+</button>
+			</div>
+			<div class="seg" role="group" aria-label="行距">
+				<button type="button" id="lineHeightMinus" title="减小行距" aria-label="减小行距">&minus;</button>
+				<span id="lineHeightValue">1.75</span>
+				<button type="button" id="lineHeightPlus" title="增大行距" aria-label="增大行距">+</button>
 			</div>
 		</div>
 	</div>

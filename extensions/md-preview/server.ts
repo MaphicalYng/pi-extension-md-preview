@@ -14,7 +14,7 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { renderMarkdown, escapeHtml, type RenderedDoc, type TocItem } from "./render";
 import { renderPage } from "./page";
-import { loadPrefs, savePrefsDebounced, normalizeTheme, clampScale, type ThemePref } from "./prefs";
+import { loadPrefs, savePrefsDebounced, normalizeTheme, clampScale, clampLineHeight, type ThemePref } from "./prefs";
 
 const IDLE_MS = 8_000; // shutdown this long after the last tab goes away
 const NEVER_OPENED_MS = 5 * 60_000; // shutdown if nobody ever opened a tab
@@ -526,6 +526,7 @@ export class PreviewServer {
 			version: resolveVersion(),
 			themeHint,
 			prefScale: prefs.scale,
+			prefLineHeight: prefs.lineHeight,
 			prefsUrl: "/prefs",
 		});
 		res.statusCode = 200;
@@ -676,7 +677,7 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 	}
 
 	/**
-	 * 页面在主题 / 字号变化时上报，合并进用户级偏好文件。
+	 * 页面在主题 / 字号 / 行距变化时上报，合并进用户级偏好文件。
 	 * 非法字段被忽略而不是报错——前端钳制值域，这里只做兜底校验。
 	 */
 	private async serveSavePrefs(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -687,7 +688,7 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 		} catch {
 			/* 空或非 JSON 主体按“无补丁”处理 */
 		}
-		const patch: { theme?: ThemePref | null; scale?: number | null } = {};
+		const patch: { theme?: ThemePref | null; scale?: number | null; lineHeight?: number | null } = {};
 		if (parsed && typeof parsed === "object") {
 			const obj = parsed as Record<string, unknown>;
 			// 非法值忽略；显式 null 表示重置回默认。
@@ -698,6 +699,10 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 			if (obj.scale !== undefined) {
 				const scale = clampScale(obj.scale);
 				if (scale !== null || obj.scale === null) patch.scale = scale;
+			}
+			if (obj.lineHeight !== undefined) {
+				const lineHeight = clampLineHeight(obj.lineHeight);
+				if (lineHeight !== null || obj.lineHeight === null) patch.lineHeight = lineHeight;
 			}
 		}
 		const prefs = savePrefsDebounced(patch);
