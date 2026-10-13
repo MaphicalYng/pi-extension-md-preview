@@ -285,6 +285,7 @@ body {
 	max-width: 1240px;
 	margin: 0 auto;
 	padding: 40px 24px 120px;
+	position: relative;
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) 236px;
 	gap: 56px;
@@ -584,9 +585,8 @@ body {
 
 /* ---------- qa rail（Agent 回复卡片） ---------- */
 
-.layout.with-qa { grid-template-columns: 248px minmax(0, 1fr) 236px; gap: 40px; }
-.qa-rail { display: none; position: relative; }
-.layout.with-qa .qa-rail { display: block; align-self: stretch; }
+.qa-rail { display: none; }
+.layout.with-qa .qa-rail { display: block; position: absolute; left: 0; top: 0; bottom: 0; width: 320px; z-index: 5; }
 
 .qa-card {
 	position: absolute;
@@ -717,7 +717,6 @@ body {
 	.layout { grid-template-columns: minmax(0, 1fr); gap: 0; padding-top: 28px; }
 	.toc { display: none; }
 	.article { max-width: 100%; }
-	.layout.with-qa { grid-template-columns: minmax(0, 1fr); }
 	.layout.with-qa .qa-rail { display: none; }
 }
 @media (max-width: 720px) {
@@ -842,7 +841,8 @@ const PAGE_JS = `
 	fontValue.addEventListener("click", function () { setScale(1); });
 	fontValue.style.cursor = "pointer";
 	fontValue.title = "点击恢复默认";
-	setScale(scale);
+	// 初始 setScale 延后到 boot 阶段调用：此时「选中提问」区块的 qaRail 等变量已就绪，
+	// 否则 setScale → layoutQaCards 会在 qaRail 赋值前执行（依赖 layoutQaCards 自身守卫兜底）。
 
 	/* ---------- toast ---------- */
 
@@ -1274,10 +1274,26 @@ const PAGE_JS = `
 
 	function anchorY(id) {
 		var m = contentEl.querySelector('mark[data-qa="' + id + '"]');
-		return m ? m.offsetTop : 0;
+		if (!m) return 0;
+		// rect 差值在同一帧内测量，页面滚动在差值中抵消，无需补偿 scrollY
+		var mr = m.getBoundingClientRect();
+		return mr.top - qaRail.getBoundingClientRect().top;
 	}
 
 	function layoutQaCards() {
+		// 守卫：本函数可能在「选中提问」区块的 qaRail/contentEl 赋值前被调用
+		//（如 setScale 在字号初始化阶段调用），此时直接返回，避免 TypeError 打断整个 IIFE。
+		if (!qaRail || !contentEl) return;
+		// rail 右缘停在正文左侧 16px 处，卡片向左伸展利用视口左侧空白（上限 560px）；
+		// 窄窗口保持 ≥280px 宽，宁可向右覆盖正文左缘，也不越出视口左缘 12px。窗口 resize 时随本函数重算。
+		var layoutRect = layoutEl.getBoundingClientRect();
+		var contentRect = contentEl.getBoundingClientRect();
+		var railRight = contentRect.left - 16;                 // rail 右缘的视口 x 坐标（正文左侧留 16px 间隙）
+		var width = Math.round(Math.min(Math.max(railRight, 280), 560));
+		var left = railRight - width - layoutRect.left;        // 换算成相对 layout 左边框的偏移
+		left = Math.max(left, 12 - layoutRect.left);           // 不越出视口左缘 12px
+		qaRail.style.width = width + "px";
+		qaRail.style.left = left + "px";
 		qaStackTop = 0;
 		var cards = qaRail.children;
 		for (var i = 0; i < cards.length; i++) {
@@ -1389,6 +1405,7 @@ const PAGE_JS = `
 
 	/* ---------- boot ---------- */
 
+	setScale(scale);
 	buildToc(DOC.toc || []);
 	enhanceCode(document);
 	var bootQa = DOC.qa || [];
