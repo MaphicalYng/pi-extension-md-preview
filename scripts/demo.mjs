@@ -115,6 +115,25 @@ console.log(`预览页面：${handle.url}`);
 
 if (smoke) {
 	const failures = [];
+
+	/** 读取 SSE 流直到谓词命中（或超时），累积文本到 acc。 */
+	const readEventsUntil = async (reader, acc, pred, label) => {
+		const decoder = new TextDecoder();
+		try {
+			for (let i = 0; i < 64; i++) {
+				const chunk = await Promise.race([
+					reader.read(),
+					new Promise((_, reject) => setTimeout(() => reject(new Error(label + " 超时")), 5000)),
+				]);
+				if (chunk.done) break;
+				acc.text += decoder.decode(chunk.value);
+				if (pred(acc.text)) return true;
+			}
+		} catch (e) {
+			failures.push(`SSE 读取异常（${label}）：${e.message}`);
+		}
+		return false;
+	};
 	const page = await fetch(handle.url);
 	const html = await page.text();
 	if (!page.ok) failures.push(`GET /doc -> ${page.status}`);
@@ -197,6 +216,49 @@ if (smoke) {
 	const prefsFinal = await (await fetch(prefsEndpoint)).json();
 	if (prefsFinal.theme !== null || prefsFinal.scale !== 1.6) failures.push(`落盘偏好异常：${JSON.stringify(prefsFinal)}`);
 
+	// ---------- 选中提问（ask → SSE → answer） ----------
+	const askBody = { quote: "核心链路平均延迟下降", question: "下降的主要原因是什么？" };
+	const askRes = await fetch(`${handle.url}/ask`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(askBody) });
+	if (askRes.status !== 200) failures.push(`POST /ask -> ${askRes.status}`);
+	const askData = askRes.ok ? await askRes.json() : {};
+	if (!askData.id) failures.push("ask 未返回问题 id");
+
+	const badAsk = await fetch(`${handle.url}/ask`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quote: "", question: "" }) });
+	if (badAsk.status !== 400) failures.push(`POST /ask 空内容 -> ${badAsk.status}（应为 400）`);
+
+	// SSE：init 携带 qa；ask / answer 事件实时推送。
+	const acc = { text: "" };
+	const esRes = await fetch(`${handle.url}/events?c=smoke-qa`);
+	const esReader = esRes.ok && esRes.body ? esRes.body.getReader() : null;
+	if (!esReader) failures.push("无法建立问答 SSE 连接");
+	if (esReader) {
+		await readEventsUntil(esReader, acc, (t) => t.includes("event: init"), "qa init");
+		if (!acc.text.includes(askData.id)) failures.push("SSE init 未携带 qa 数据");
+
+		const reply = server.answerQuestion(askData.id, "缓存命中率提升与**索引优化**，详见压测数据。");
+		if (!reply.ok) failures.push(`answerQuestion 失败：${reply.message}`);
+		await readEventsUntil(esReader, acc, (t) => t.includes("event: answer"), "qa answer");
+		if (!acc.text.includes("event: answer") || !acc.text.includes("缓存命中率提升")) failures.push("SSE answer 事件缺失或内容不对");
+
+		const orphan = server.answerQuestion("q999", "孤儿回复");
+		if (orphan.ok) failures.push("answerQuestion 未知 id 应失败");
+
+		const askRes2 = await fetch(`${handle.url}/ask`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quote: "P99 延迟", question: "还会再降吗？" }) });
+		const askData2 = askRes2.ok ? await askRes2.json() : {};
+		await readEventsUntil(esReader, acc, (t) => t.includes("event: ask"), "qa ask");
+		if (!acc.text.includes("event: ask") || !acc.text.includes(askData2.id)) failures.push("SSE ask 事件缺失或 id 不对");
+		await esReader.cancel();
+	}
+
+	// 重新渲染的页面应内嵌问答数据与提问端点。
+	const page3 = await fetch(handle.url);
+	const html3 = page3.ok ? await page3.text() : "";
+	if (!page3.ok) failures.push(`GET /doc（三次）-> ${page3.status}`);
+	if (!html3.includes("/ask")) failures.push("页面未注入提问端点");
+	if (!html3.includes("下降的主要原因是什么？")) failures.push("页面未内嵌提问内容");
+	if (!html3.includes("缓存命中率提升")) failures.push("页面未内嵌回复内容");
+	if (!html3.includes("mdp-qa-hl")) failures.push("页面缺少橙色高亮样式");
+
 	await server.shutdown("smoke 完成");
 	rmSync(tmpConfig, { recursive: true, force: true });
 	if (failures.length) {
@@ -204,7 +266,7 @@ if (smoke) {
 		for (const f of failures) console.error(`  - ${f}`);
 		process.exit(1);
 	}
-	console.log("smoke 通过：页面渲染、目录、SSE 实时更新、raw HTML 转义、用户级偏好（/prefs）均正常。");
+	console.log("smoke 通过：页面渲染、SSE、偏好持久化（/prefs）、选中提问（ask/answer/SSE 推送）均正常。");
 	process.exit(0);
 }
 

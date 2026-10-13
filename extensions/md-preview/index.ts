@@ -14,10 +14,36 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { currentServer, ensureServer } from "./server";
+import { currentServer, ensureServer, type QaEntry } from "./server";
 import { openBrowser } from "./browser";
 
 type Notify = (message: string, type?: "info" | "warning" | "error") => void;
+
+/**
+ * 会话信使：由扩展工厂注入，用于把预览页提问送进 pi 会话。
+ * followUp 投递在 Agent 空闲时立即唤起新 turn，忙时排队到当前 turn 结束后唤起。
+ */
+let sessionMessenger: ((text: string) => void) | null = null;
+
+/** 把预览页提问格式化为注入 pi 会话的用户消息。 */
+function formatAskMessage(qa: QaEntry & { title: string }): string {
+	const quote = qa.quote.length > 1200 ? `${qa.quote.slice(0, 1200)}\n…（原文过长已截断）` : qa.quote;
+	return [
+		"【Markdown 预览页提问】",
+		"",
+		`文档：《${qa.title}》`,
+		"",
+		"用户在预览页选中了以下原文：",
+		"",
+		"```text",
+		quote,
+		"```",
+		"",
+		`问题：${qa.question}`,
+		"",
+		`请结合相关文件内容回答，并调用 md_preview_reply 工具把答复送回预览页（question_id: "${qa.id}"）。`,
+	].join("\n");
+}
 
 interface PreviewOutcome {
 	ok: boolean;
@@ -43,13 +69,17 @@ async function previewMarkdown(
 		return { ok: false, text: `预览失败：\`${abs}\` 不是一个普通文件。` };
 	}
 
-	const server = await ensureServer((reason) => {
-		try {
-			opts.notify?.(`Markdown 预览：${reason}`, "info");
-		} catch {
-			/* session may already be gone; nothing to notify */
-		}
+	const server = await ensureServer({
+		onShutdown: (reason) => {
+			try {
+				opts.notify?.(`Markdown 预览：${reason}`, "info");
+			} catch {
+				/* session may already be gone; nothing to notify */
+			}
+		},
 	});
+	// 预览页提问 → 注入 pi 会话唤醒 Agent 作答。
+	server.onAsk = (qa) => sessionMessenger?.(formatAskMessage(qa));
 	const handle = await server.openDocument(abs, { cwd: opts.cwd, title: opts.title });
 
 	const tabAlreadyOpen = handle.liveViewers > 0;
@@ -129,6 +159,42 @@ const mdPreviewTool = defineTool({
 	},
 });
 
+/**
+ * Agent 回复预览页提问的出口：页面提问经 onAsk 注入会话后，模型阅读相关文件，
+ * 再通过本工具把答复送回预览页（SSE 推送到所有打开该文档的标签页）。
+ */
+const mdPreviewReplyTool = defineTool({
+	name: "md_preview_reply",
+	label: "回复预览页提问",
+	description:
+		"回复用户在 Markdown 预览页面中就选中文本提出的提问。仅当收到「Markdown 预览页提问」消息时调用；" +
+		"回复会以卡片形式显示在预览页文档左侧，包含原文、回复内容与回复时间。",
+	parameters: Type.Object({
+		question_id: Type.Optional(Type.String({
+			description: "提问 ID（提问消息中会给出，如 q1）；省略时回复最早未回复的提问",
+		})),
+		text: Type.String({ description: "回复内容，支持 Markdown" }),
+	}),
+	annotations: {
+		readOnlyHint: false,
+		destructiveHint: false,
+		idempotentHint: true,
+		openWorldHint: false,
+	},
+	async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+		const server = currentServer();
+		if (!server) {
+			return { content: [{ type: "text", text: "当前没有运行中的 Markdown 预览服务。" }], isError: true, details: undefined };
+		}
+		const result = server.answerQuestion(params.question_id ?? undefined, params.text);
+		return {
+			content: [{ type: "text", text: result.message }],
+			isError: !result.ok,
+			details: { question_id: params.question_id ?? null },
+		};
+	},
+});
+
 /** Complete `/md-preview` with Markdown files under the current working directory. */
 function completeMarkdownFiles(prefix: string): { value: string; label: string }[] | null {
 	const cwd = process.cwd();
@@ -151,7 +217,19 @@ function completeMarkdownFiles(prefix: string): { value: string; label: string }
 }
 
 export default function mdPreviewExtension(pi: ExtensionAPI) {
+	sessionMessenger = (text) => {
+		try {
+			pi.sendUserMessage(text, { deliverAs: "followUp" });
+		} catch {
+			try {
+				pi.sendUserMessage(text);
+			} catch {
+				/* 会话繁忙且不支持排队：提问保留在预览页待回复列表中 */
+			}
+		}
+	};
 	pi.registerTool(mdPreviewTool);
+	pi.registerTool(mdPreviewReplyTool);
 
 	pi.registerCommand("md-preview", {
 		description: "用 Web UI 渲染并预览 Markdown 文件：/md-preview <文件路径>",

@@ -10,6 +10,16 @@
 import type { TocItem } from "./render";
 import { escapeHtml } from "./render";
 
+/** 下发到页面的问答条目（answerHtml 为 null 表示待回复） */
+export interface PageQaEntry {
+	id: string;
+	quote: string;
+	question: string;
+	answerHtml?: string | null;
+	askedAt: number;
+	answeredAt?: number | null;
+}
+
 export interface PageOptions {
 	docId: string;
 	title: string;
@@ -27,6 +37,10 @@ export interface PageOptions {
 	prefScale?: number | null;
 	/** POST endpoint that persists theme/scale changes into the user-level prefs file. */
 	prefsUrl?: string;
+	/** POST endpoint that submits a question about selected text (选中提问). */
+	askUrl?: string;
+	/** Existing Q&A entries embedded at render time so cards survive reloads. */
+	qa?: PageQaEntry[];
 }
 
 const THEME_BOOT = `<script>
@@ -566,12 +580,143 @@ body {
 .to-top:hover { color: var(--accent); transform: translateY(-2px); }
 .to-top svg { width: 16px; height: 16px; }
 
+/* ---------- qa rail（Agent 回复卡片） ---------- */
+
+.layout.with-qa { grid-template-columns: 248px minmax(0, 1fr) 236px; gap: 40px; }
+.qa-rail { display: none; position: relative; }
+.layout.with-qa .qa-rail { display: block; align-self: stretch; }
+
+.qa-card {
+	position: absolute;
+	left: 0; right: 0;
+	background: var(--bg-elev);
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	padding: 12px 14px;
+	box-shadow: var(--shadow-1);
+	font-size: 0.78rem;
+	line-height: 1.6;
+	pointer-events: auto;
+}
+.qa-card.pending { border-style: dashed; box-shadow: none; }
+.qa-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.qa-badge { font-size: 0.68rem; font-weight: 650; color: var(--accent); background: var(--accent-soft); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.qa-time { font-size: 0.68rem; color: var(--text-3); white-space: nowrap; }
+.qa-label { font-weight: 650; margin-right: 4px; }
+.qa-quote {
+	border-left: 3px solid #e88911;
+	background: rgba(232, 137, 17, 0.1);
+	padding: 5px 8px;
+	border-radius: 0 6px 6px 0;
+	color: var(--text-2);
+	margin: 6px 0;
+	overflow: hidden;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	word-break: break-all;
+}
+.qa-q { color: var(--text-2); margin: 4px 0; word-break: break-all; }
+.qa-a { color: var(--text); }
+.qa-a > :first-child { margin-top: 0.2em; }
+.qa-a > :last-child { margin-bottom: 0.2em; }
+.qa-a code { font-size: 0.85em; }
+.qa-wait { color: var(--text-3); display: flex; align-items: center; gap: 7px; padding: 4px 0; }
+.qa-pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: qaPulse 1.2s ease-in-out infinite; }
+@keyframes qaPulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+
+/* 选中提问的原文：橙色高亮 */
+.content mark.mdp-qa-hl {
+	background: rgba(232, 137, 17, 0.35);
+	color: inherit;
+	padding: 0.05em 0;
+	border-bottom: 2px solid rgba(232, 137, 17, 0.7);
+	border-radius: 2px;
+}
+:root[data-theme="dark"] .content mark.mdp-qa-hl { background: rgba(232, 137, 17, 0.42); }
+
+/* 选中提问交互：浮动按钮 + 提问面板 */
+.qa-sel-btn {
+	position: absolute;
+	z-index: 90;
+	appearance: none;
+	border: 0;
+	background: var(--accent);
+	color: #fff;
+	font: inherit;
+	font-size: 0.78rem;
+	font-weight: 600;
+	padding: 5px 12px;
+	border-radius: 8px;
+	cursor: pointer;
+	box-shadow: var(--shadow-2);
+}
+:root[data-theme="dark"] .qa-sel-btn { color: #0e1116; }
+.qa-sel-btn:hover { background: var(--accent-hover); }
+
+.qa-panel {
+	position: absolute;
+	z-index: 95;
+	width: 330px;
+	max-width: calc(100vw - 24px);
+	background: var(--bg-elev);
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	box-shadow: var(--shadow-2);
+	padding: 12px;
+	font-size: 0.82rem;
+}
+.qa-panel-quote {
+	border-left: 3px solid #e88911;
+	background: rgba(232, 137, 17, 0.1);
+	padding: 4px 8px;
+	border-radius: 0 6px 6px 0;
+	color: var(--text-2);
+	margin-bottom: 8px;
+	max-height: 3.4em;
+	overflow: hidden;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	word-break: break-all;
+}
+.qa-panel textarea {
+	width: 100%;
+	resize: vertical;
+	font: inherit;
+	font-size: 0.82rem;
+	color: var(--text);
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 8px 10px;
+	outline: none;
+}
+.qa-panel textarea:focus { border-color: var(--accent); }
+.qa-panel-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.qa-panel-actions button {
+	appearance: none;
+	font: inherit;
+	font-size: 0.78rem;
+	padding: 5px 14px;
+	border-radius: 8px;
+	border: 1px solid var(--border);
+	background: var(--bg);
+	color: var(--text-2);
+	cursor: pointer;
+}
+.qa-panel-actions button:hover { color: var(--text); border-color: var(--text-3); }
+.qa-panel-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+:root[data-theme="dark"] .qa-panel-actions button.primary { color: #0e1116; }
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 1080px) {
 	.layout { grid-template-columns: minmax(0, 1fr); gap: 0; padding-top: 28px; }
 	.toc { display: none; }
 	.article { max-width: 100%; }
+	.layout.with-qa { grid-template-columns: minmax(0, 1fr); }
+	.layout.with-qa .qa-rail { display: none; }
 }
 @media (max-width: 720px) {
 	.topbar-inner { padding: 0 14px; gap: 10px; }
@@ -593,7 +738,7 @@ body {
 }
 
 @media print {
-	.progress, .topbar, .toc, .to-top, .toast, .copy-btn, .heading-anchor { display: none !important; }
+	.progress, .topbar, .toc, .to-top, .toast, .copy-btn, .heading-anchor, .qa-rail, .qa-sel-btn, .qa-panel { display: none !important; }
 	body { background: #fff; color: #000; }
 	.layout { display: block; padding: 0; }
 	.code-block { break-inside: avoid; }
@@ -688,6 +833,7 @@ const PAGE_JS = `
 		try { localStorage.setItem("mdp.scale", String(scale)); } catch (e) {}
 		savePrefs({ scale: scale });
 		fontValue.textContent = Math.round(scale * 100) + "%";
+		layoutQaCards();
 	}
 	document.getElementById("fontMinus").addEventListener("click", function () { setScale(scale - 0.1); });
 	document.getElementById("fontPlus").addEventListener("click", function () { setScale(scale + 0.1); });
@@ -971,6 +1117,7 @@ const PAGE_JS = `
 		}
 		buildToc(d.toc || []);
 		enhanceCode(content);
+		restoreQaHighlights();
 		onScroll();
 		if (!quiet) toast("文档已更新");
 	}
@@ -989,6 +1136,29 @@ const PAGE_JS = `
 			setLive("down");
 			toast("预览服务已退出");
 		});
+		es.addEventListener("ask", function (e) {
+			try {
+				var qa = JSON.parse(e.data);
+				// 本标签页刚提交的提问优先用提交时存活的选区做精确高亮（支持跨元素）
+				if (pendingSubmit && qa.quote === pendingSubmit.quote && qa.question === pendingSubmit.question) {
+					addQa(qa, pendingSubmit.range);
+					pendingSubmit = null;
+				} else {
+					addQa(qa);
+				}
+			} catch (err) { /* ignore malformed frames */ }
+		});
+		es.addEventListener("answer", function (e) {
+			try {
+				var d = JSON.parse(e.data);
+				var entry = qaState[d.id];
+				if (!entry) return;
+				entry.answerHtml = d.answerHtml;
+				entry.answeredAt = d.answeredAt;
+				refreshCard(d.id);
+				toast("Agent 已回复");
+			} catch (err) { /* ignore malformed frames */ }
+		});
 	}
 
 	if (DOC.closeUrl && navigator.sendBeacon) {
@@ -997,10 +1167,230 @@ const PAGE_JS = `
 		});
 	}
 
+	/* ---------- 选中提问（Q&A with the agent） ---------- */
+
+	var askUrl = DOC.askUrl || "";
+	var layoutEl = document.getElementById("layout");
+	var contentEl = document.getElementById("content");
+	var qaRail = document.getElementById("qaRail");
+	var qaState = {};
+	var qaStackTop = 0;
+	var pendingSubmit = null;
+
+	function esc(s) {
+		return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+	}
+	function fmtTime(t) {
+		try { return new Date(t).toLocaleString("zh-CN", { hour12: false }); } catch (e) { return ""; }
+	}
+
+	// 用仍然存活的 Range 精确包裹选区（支持跨元素选择）。
+	function highlightRange(id, range) {
+		if (!range || range.collapsed || !range.startContainer) return false;
+		if (!contentEl.contains(range.commonAncestorContainer)) return false;
+		var frag = null;
+		try {
+			frag = range.extractContents();
+			var walker = document.createTreeWalker(frag, NodeFilter.SHOW_TEXT);
+			var nodes = [], t;
+			while ((t = walker.nextNode())) if (t.nodeValue && t.nodeValue.trim()) nodes.push(t);
+			if (!nodes.length) return false;
+			for (var i = 0; i < nodes.length; i++) {
+				var mark = document.createElement("mark");
+				mark.className = "mdp-qa-hl";
+				mark.setAttribute("data-qa", id);
+				nodes[i].parentNode.insertBefore(mark, nodes[i]);
+				mark.appendChild(nodes[i]);
+			}
+			range.insertNode(frag);
+			frag = null;
+			return true;
+		} catch (err) {
+			try { if (frag && frag.childNodes.length) range.insertNode(frag); } catch (e2) { /* 尽力恢复原内容 */ }
+			return false;
+		}
+	}
+
+	// 恢复场景（刷新 / 重渲染 / 其他标签页）：按文本在正文里定位并包裹。
+	// 仅处理落在单个文本节点内的原文；跨节点原文在恢复时不高亮（卡片仍显示）。
+	function highlightByText(id, quote) {
+		if (!quote) return false;
+		if (contentEl.querySelector('mark[data-qa="' + id + '"]')) return true;
+		var walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT, {
+			acceptNode: function (n) {
+				if (!n.nodeValue || n.nodeValue.indexOf(quote) < 0) return NodeFilter.FILTER_REJECT;
+				var p = n.parentNode;
+				while (p && p !== contentEl) {
+					if (p.classList && p.classList.contains("mdp-qa-hl")) return NodeFilter.FILTER_REJECT;
+					p = p.parentNode;
+				}
+				return NodeFilter.FILTER_ACCEPT;
+			},
+		});
+		var n = walker.nextNode();
+		if (!n) return false;
+		var idx = n.nodeValue.indexOf(quote);
+		var mark = document.createElement("mark");
+		mark.className = "mdp-qa-hl";
+		mark.setAttribute("data-qa", id);
+		n.splitText(idx);
+		var after = n.nextSibling;
+		after.splitText(quote.length);
+		after.parentNode.insertBefore(mark, after);
+		mark.appendChild(after);
+		return true;
+	}
+
+	function cardInnerHtml(entry) {
+		var answered = !!entry.answerHtml;
+		var time = answered && entry.answeredAt ? fmtTime(entry.answeredAt) : "";
+		return '<div class="qa-head"><span class="qa-badge">Agent 回复</span><span class="qa-time">' + esc(time) + "</span></div>"
+			+ '<div class="qa-quote"><span class="qa-label">原文</span>' + esc(entry.quote) + "</div>"
+			+ '<div class="qa-q"><span class="qa-label">问</span>' + esc(entry.question) + "</div>"
+			+ (answered
+				? '<div class="qa-a">' + entry.answerHtml + "</div>"
+				: '<div class="qa-wait"><span class="qa-pulse"></span>等待 Agent 回复…</div>');
+	}
+
+	function buildCard(id, entry) {
+		var card = document.createElement("div");
+		card.className = "qa-card" + (entry.answerHtml ? "" : " pending");
+		card.setAttribute("data-qa", id);
+		card.innerHTML = cardInnerHtml(entry);
+		return card;
+	}
+
+	function refreshCard(id) {
+		var entry = qaState[id];
+		if (!entry) return;
+		var card = qaRail.querySelector('.qa-card[data-qa="' + id + '"]');
+		if (!card) return;
+		card.classList.remove("pending");
+		card.innerHTML = cardInnerHtml(entry);
+		layoutQaCards();
+	}
+
+	function anchorY(id) {
+		var m = contentEl.querySelector('mark[data-qa="' + id + '"]');
+		return m ? m.offsetTop : 0;
+	}
+
+	function layoutQaCards() {
+		qaStackTop = 0;
+		var cards = qaRail.children;
+		for (var i = 0; i < cards.length; i++) {
+			var id = cards[i].getAttribute("data-qa");
+			var top = Math.max(anchorY(id), qaStackTop);
+			cards[i].style.top = top + "px";
+			qaStackTop = top + cards[i].offsetHeight + 12;
+		}
+	}
+
+	function addQa(entry, range) {
+		if (!entry || !entry.id || qaState[entry.id]) return;
+		qaState[entry.id] = entry;
+		layoutEl.classList.add("with-qa");
+		var ok = false;
+		if (range) ok = highlightRange(entry.id, range);
+		if (!ok) highlightByText(entry.id, entry.quote);
+		qaRail.appendChild(buildCard(entry.id, entry));
+		layoutQaCards();
+	}
+
+	function restoreQaHighlights() {
+		for (var id in qaState) {
+			if (Object.prototype.hasOwnProperty.call(qaState, id)) highlightByText(id, qaState[id].quote);
+		}
+		layoutQaCards();
+	}
+	window.addEventListener("resize", layoutQaCards);
+
+	/* 选区交互：浮动「提问」按钮 + 提问面板 */
+	var selBtn = document.getElementById("qaSelBtn");
+	var askPanel = document.getElementById("askPanel");
+	var panelQuote = document.getElementById("qaPanelQuote");
+	var panelInput = document.getElementById("qaPanelInput");
+	var selTimer = null;
+	var pendingRange = null;
+	var pendingQuote = "";
+
+	function updateSelBtn() {
+		if (!askUrl || (askPanel && !askPanel.hidden)) return;
+		var sel = window.getSelection();
+		if (!sel || sel.isCollapsed || !sel.rangeCount) { selBtn.hidden = true; return; }
+		var range = sel.getRangeAt(0);
+		if (!contentEl.contains(range.commonAncestorContainer)) { selBtn.hidden = true; return; }
+		var text = sel.toString();
+		if (!text || !text.trim()) { selBtn.hidden = true; return; }
+		pendingRange = range.cloneRange();
+		pendingQuote = text;
+		var rect = range.getBoundingClientRect();
+		selBtn.style.top = (rect.bottom + window.scrollY + 8) + "px";
+		selBtn.style.left = Math.max(8, rect.left + window.scrollX) + "px";
+		selBtn.hidden = false;
+	}
+
+	if (askUrl) {
+		document.addEventListener("selectionchange", function () {
+			clearTimeout(selTimer);
+			selTimer = setTimeout(updateSelBtn, 160);
+		});
+		selBtn.addEventListener("mousedown", function (e) { e.preventDefault(); });
+		selBtn.addEventListener("click", function () {
+			selBtn.hidden = true;
+			panelQuote.textContent = pendingQuote.length > 120 ? pendingQuote.slice(0, 120) + "…" : pendingQuote;
+			panelInput.value = "";
+			askPanel.style.top = selBtn.style.top;
+			askPanel.style.left = selBtn.style.left;
+			askPanel.hidden = false;
+			panelInput.focus();
+		});
+		document.getElementById("qaPanelCancel").addEventListener("click", function () {
+			askPanel.hidden = true;
+		});
+		panelInput.addEventListener("keydown", function (e) {
+			if (e.key === "Enter" && !e.shiftKey) {
+				e.preventDefault();
+				submitAsk();
+			}
+		});
+		document.getElementById("qaPanelSend").addEventListener("click", submitAsk);
+
+		function submitAsk() {
+			var q = panelInput.value.trim();
+			if (!q || !pendingQuote) return;
+			// 与服务端落库时的 trim 保持一致，SSE 回来时才能匹配上 pendingSubmit
+			var quote = pendingQuote.trim();
+			var range = pendingRange;
+			pendingSubmit = { quote: quote, question: q, range: range };
+			panelInput.disabled = true;
+			fetch(askUrl, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ quote: quote, question: q }),
+			}).then(function (res) {
+				if (!res.ok) throw new Error("http " + res.status);
+				return res.json();
+			}).then(function (data) {
+				askPanel.hidden = true;
+				pendingSubmit = null;
+				if (!qaState[data.id]) addQa({ id: data.id, quote: quote, question: q, answerHtml: null, askedAt: data.askedAt || Date.now(), answeredAt: null }, range);
+				toast("已提问，等待 Agent 回复…");
+			}).catch(function () {
+				pendingSubmit = null;
+				toast("提问发送失败，请重试");
+			}).then(function () {
+				panelInput.disabled = false;
+			});
+		}
+	}
+
 	/* ---------- boot ---------- */
 
 	buildToc(DOC.toc || []);
 	enhanceCode(document);
+	var bootQa = DOC.qa || [];
+	for (var bi = 0; bi < bootQa.length; bi++) addQa(bootQa[bi]);
 	onScroll();
 })();
 `;
@@ -1019,8 +1409,8 @@ function icon(name: string): string {
 }
 
 export function renderPage(options: PageOptions): string {
-	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefsUrl } = options;
-	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl }).replace(/</g, "\\u003c");
+	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefsUrl, askUrl, qa } = options;
+	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, qa: qa ?? [] }).replace(/</g, "\\u003c");
 	const hintAttr = themeHint ? ` data-theme-hint="${escapeHtml(themeHint)}"` : "";
 	const scaleAttr = typeof prefScale === "number" && isFinite(prefScale) ? ` data-pref-scale="${prefScale}"` : "";
 
@@ -1062,7 +1452,8 @@ ${THEME_BOOT}
 	</div>
 </header>
 
-<div class="layout">
+<div class="layout" id="layout">
+	<div class="qa-rail" id="qaRail" aria-label="Agent 回复"></div>
 	<main class="article">
 		<div class="content" id="content">
 ${bodyHtml}
@@ -1077,6 +1468,16 @@ ${bodyHtml}
 		<div class="toc-title">目录</div>
 		<nav id="tocNav"></nav>
 	</aside>
+</div>
+
+<button type="button" class="qa-sel-btn" id="qaSelBtn" hidden>✦ 提问</button>
+<div class="qa-panel" id="askPanel" hidden>
+	<div class="qa-panel-quote" id="qaPanelQuote"></div>
+	<textarea id="qaPanelInput" rows="3" placeholder="就选中内容向 Agent 提问…（Enter 发送，Shift+Enter 换行）"></textarea>
+	<div class="qa-panel-actions">
+		<button type="button" id="qaPanelSend" class="primary">发送</button>
+		<button type="button" id="qaPanelCancel">取消</button>
+	</div>
 </div>
 
 <button class="to-top" id="toTop" type="button" aria-label="回到顶部" title="回到顶部">${icon("up")}</button>

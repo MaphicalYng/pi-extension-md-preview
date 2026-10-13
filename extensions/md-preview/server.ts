@@ -50,6 +50,32 @@ interface DocState {
 	viewers: Map<string, string>;
 }
 
+/** 预览页「选中提问」的一条问答记录 */
+export interface QaEntry {
+	id: string;
+	docId: string;
+	/** 用户在预览页选中的原文 */
+	quote: string;
+	/** 用户的提问 */
+	question: string;
+	/** Agent 回复（服务端渲染后的 HTML；原始 HTML 已按转义文本渲染） */
+	answerHtml?: string;
+	askedAt: number;
+	answeredAt?: number;
+}
+
+/** 下发到页面的问答数据形态（answerHtml 为 null 表示待回复） */
+export interface QaPayload {
+	id: string;
+	quote: string;
+	question: string;
+	answerHtml: string | null;
+	askedAt: number;
+	answeredAt: number | null;
+}
+
+const MAX_QA_PER_DOC = 50;
+
 const CONTENT_TYPES: Record<string, string> = {
 	txt: "text/plain; charset=utf-8",
 	md: "text/markdown; charset=utf-8",
@@ -81,6 +107,10 @@ export class PreviewServer {
 	private noViewerSince: number | null = null;
 	private shuttingDown = false;
 	private onShutdown?: (reason: string) => void;
+	/** 预览页收到提问时回调（扩展用它把提问注入 pi 会话以唤醒 Agent） */
+	onAsk: ((qa: QaEntry & { title: string }) => void) | null = null;
+	private qa = new Map<string, QaEntry>();
+	private qaSeq = 0;
 	port = 0;
 
 	constructor(onShutdown?: (reason: string) => void) {
@@ -266,17 +296,75 @@ export class PreviewServer {
 		}
 	}
 
+	private broadcastEvent(docId: string, event: string, payload: string): void {
+		for (const [connId, connDocId] of this.connDoc) {
+			if (connDocId !== docId) continue;
+			const res = this.sseConns.get(connId);
+			if (res) this.writeSse(res, event, payload);
+		}
+	}
+
 	private broadcastUpdate(doc: DocState): void {
 		const payload = JSON.stringify({
 			html: doc.rendered.html,
 			toc: doc.rendered.toc as TocItem[],
 			title: this.titleFor(doc),
 		});
-		for (const [connId, connDocId] of this.connDoc) {
-			if (connDocId !== doc.id) continue;
-			const res = this.sseConns.get(connId);
-			if (res) this.writeSse(res, "update", payload);
+		this.broadcastEvent(doc.id, "update", payload);
+	}
+
+	// ------------------------------------------------------- 选中提问（Q&A）
+
+	private qaPayload(e: QaEntry): QaPayload {
+		return {
+			id: e.id,
+			quote: e.quote,
+			question: e.question,
+			answerHtml: e.answerHtml ?? null,
+			askedAt: e.askedAt,
+			answeredAt: e.answeredAt ?? null,
+		};
+	}
+
+	qaList(docId: string): QaPayload[] {
+		return [...this.qa.values()].filter((e) => e.docId === docId).map((e) => this.qaPayload(e));
+	}
+
+	/** 预览页提交提问：落库、广播 SSE ask、回调扩展注入 pi 会话。 */
+	ask(doc: DocState, quote: string, question: string): QaEntry {
+		const entry: QaEntry = { id: `q${++this.qaSeq}`, docId: doc.id, quote, question, askedAt: Date.now() };
+		this.qa.set(entry.id, entry);
+		const list = this.qaList(doc.id);
+		if (list.length > MAX_QA_PER_DOC) {
+			for (const old of list.slice(0, list.length - MAX_QA_PER_DOC)) this.qa.delete(old.id);
 		}
+		this.broadcastEvent(doc.id, "ask", JSON.stringify(this.qaPayload(entry)));
+		try {
+			this.onAsk?.({ ...entry, title: this.titleFor(doc) });
+		} catch {
+			/* 注入 pi 会话失败不阻塞提问本身 */
+		}
+		return entry;
+	}
+
+	/**
+	 * md_preview_reply 工具入口：记录 Agent 回复并广播 SSE answer 事件。
+	 * questionId 省略时回复最早未回复的提问。
+	 */
+	answerQuestion(questionId: string | undefined, text: string): { ok: boolean; message: string } {
+		const answer = (text ?? "").trim();
+		if (!answer) return { ok: false, message: "回复内容为空。" };
+		let entry: QaEntry | undefined;
+		if (questionId) entry = this.qa.get(questionId);
+		else for (const e of this.qa.values()) if (!e.answerHtml) { entry = e; break; }
+		if (!entry || entry.answerHtml) {
+			const pending = [...this.qa.values()].filter((e) => !e.answerHtml).map((e) => e.id).join(", ") || "无";
+			return { ok: false, message: `未找到可回复的提问（question_id=${questionId ?? "最早未回复"}）。当前未回复的提问：${pending}` };
+		}
+		entry.answerHtml = renderMarkdown(answer).html;
+		entry.answeredAt = Date.now();
+		this.broadcastEvent(entry.docId, "answer", JSON.stringify({ id: entry.id, answerHtml: entry.answerHtml, answeredAt: entry.answeredAt }));
+		return { ok: true, message: `已回复预览页提问 ${entry.id}，回复卡片已推送到浏览器。` };
 	}
 
 	// --------------------------------------------------------------- routes
@@ -299,7 +387,7 @@ export class PreviewServer {
 			return;
 		}
 		if (p.startsWith("/asset/")) return this.serveAsset(res, p.slice("/asset/".length));
-		const m = p.match(/^\/doc\/([^/]+)(\/events|\/close)?$/);
+		const m = p.match(/^\/doc\/([^/]+)(\/events|\/close|\/ask)?$/);
 		if (m) {
 			const token = m[1] ?? "";
 			const sub = m[2] ?? "";
@@ -307,6 +395,7 @@ export class PreviewServer {
 			if (!doc) return notFound(res, "document not found");
 			if (sub === "/events") return this.serveEvents(req, res, doc, url);
 			if (sub === "/close") return this.serveClose(req, res, doc, url);
+			if (sub === "/ask") return this.serveAsk(req, res, doc);
 			return this.serveDoc(res, doc);
 		}
 		return notFound(res, "not found");
@@ -359,6 +448,8 @@ export class PreviewServer {
 			toc: doc.rendered.toc,
 			updateUrl: `/doc/${doc.id}/events?c=${cid}&v=${doc.version}`,
 			closeUrl: `/doc/${doc.id}/close?c=${cid}`,
+			askUrl: `/doc/${doc.id}/ask`,
+			qa: this.qaList(doc.id),
 			themeHint,
 			prefScale: prefs.scale,
 			prefsUrl: "/prefs",
@@ -367,6 +458,29 @@ export class PreviewServer {
 		res.setHeader("Content-Type", "text/html; charset=utf-8");
 		res.setHeader("Cache-Control", "no-store");
 		res.end(html);
+	}
+
+	private async serveAsk(req: http.IncomingMessage, res: http.ServerResponse, doc: DocState): Promise<void> {
+		const body = await readBody(req);
+		let parsed: unknown = null;
+		try {
+			parsed = JSON.parse(body);
+		} catch {
+			/* 空或非 JSON 主体按无效请求处理 */
+		}
+		const obj = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+		const quote = typeof obj.quote === "string" ? obj.quote.trim().slice(0, 2000) : "";
+		const question = typeof obj.question === "string" ? obj.question.trim().slice(0, 2000) : "";
+		res.setHeader("Content-Type", "application/json; charset=utf-8");
+		res.setHeader("Cache-Control", "no-store");
+		if (!quote || !question) {
+			res.statusCode = 400;
+			res.end(JSON.stringify({ error: "quote 与 question 必须是非空字符串" }));
+			return;
+		}
+		const entry = this.ask(doc, quote, question);
+		res.statusCode = 200;
+		res.end(JSON.stringify({ id: entry.id, askedAt: entry.askedAt }));
 	}
 
 	private serveEvents(req: http.IncomingMessage, res: http.ServerResponse, doc: DocState, url: URL): void {
@@ -380,7 +494,7 @@ export class PreviewServer {
 		res.write("retry: 2000\n\n");
 		// A tab that loaded the page before the latest render syncs immediately.
 		if (url.searchParams.get("v") !== String(doc.version)) {
-			this.writeSse(res, "init", JSON.stringify({ html: doc.rendered.html, toc: doc.rendered.toc, title: this.titleFor(doc) }));
+			this.writeSse(res, "init", JSON.stringify({ html: doc.rendered.html, toc: doc.rendered.toc, title: this.titleFor(doc), qa: this.qaList(doc.id) }));
 		}
 		this.sseConns.set(connId, res);
 		this.connDoc.set(connId, doc.id);
@@ -605,10 +719,14 @@ export function decodePathToken(token: string): string | null {
 let instance: PreviewServer | null = null;
 let starting: Promise<PreviewServer> | null = null;
 
-export function ensureServer(onShutdown?: (reason: string) => void): Promise<PreviewServer> {
+export function ensureServer(opts?: {
+	onShutdown?: (reason: string) => void;
+	onAsk?: (qa: QaEntry & { title: string }) => void;
+}): Promise<PreviewServer> {
 	if (instance && instance.isOpen) return Promise.resolve(instance);
 	if (!starting) {
-		const server = new PreviewServer(onShutdown);
+		const server = new PreviewServer(opts?.onShutdown);
+		if (opts?.onAsk) server.onAsk = opts.onAsk;
 		const boot = server.start().then(() => {
 			instance = server;
 			return server;
