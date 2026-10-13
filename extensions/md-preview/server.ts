@@ -11,6 +11,7 @@
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { renderMarkdown, escapeHtml, type RenderedDoc, type TocItem } from "./render";
 import { renderPage } from "./page";
 import { loadPrefs, savePrefsDebounced, normalizeTheme, clampScale, type ThemePref } from "./prefs";
@@ -75,6 +76,66 @@ export interface QaPayload {
 }
 
 const MAX_QA_PER_DOC = 50;
+
+// ----------------------------------------------------------- 版本号（页脚）
+
+/** 从当前文件位置向上找扩展根目录（含本扩展 package.json 的目录）。 */
+function findExtensionRoot(startDir: string): string | null {
+	let dir = startDir;
+	for (let i = 0; i < 6; i++) {
+		try {
+			const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")) as { name?: string };
+			if (pkg.name === "pi-extension-md-preview") return dir;
+		} catch {
+			/* 继续向上 */
+		}
+		const parent = path.dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	return null;
+}
+
+let cachedVersion: string | null | undefined;
+
+/**
+ * 页脚版本号：提交日期 + 短 commit id（如 2026-10-13 · 9311172）。
+ * 首次渲染时向扩展根目录 spawn 一次 git（不经 shell）；工作区有改动追加 -dirty；
+ * 找不到 git / 仓库时返回 null，页面不显示页脚。
+ */
+function resolveVersion(): string | null {
+	if (cachedVersion !== undefined) return cachedVersion;
+	cachedVersion = null;
+	try {
+		const here = typeof __dirname === "string" ? __dirname : process.cwd();
+		const rootDir = findExtensionRoot(here);
+		if (!rootDir) return cachedVersion;
+		const log = execFileSync("git", ["log", "-1", "--format=%h %cs"], {
+			cwd: rootDir,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+		const m = log.match(/^(\S+)\s+(\S+)$/);
+		const hash = m?.[1] ?? "";
+		const date = m?.[2] ?? "";
+		if (!hash || !date) return cachedVersion;
+		let dirty = "";
+		try {
+			const status = execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], {
+				cwd: rootDir,
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+			}).trim();
+			if (status) dirty = "-dirty";
+		} catch {
+			/* 忽略脏检查失败 */
+		}
+		cachedVersion = `${date} · ${hash}${dirty}`;
+	} catch {
+		/* 无 git 或不在仓库中：不显示版本 */
+	}
+	return cachedVersion;
+}
 
 const CONTENT_TYPES: Record<string, string> = {
 	txt: "text/plain; charset=utf-8",
@@ -450,6 +511,7 @@ export class PreviewServer {
 			closeUrl: `/doc/${doc.id}/close?c=${cid}`,
 			askUrl: `/doc/${doc.id}/ask`,
 			qa: this.qaList(doc.id),
+			version: resolveVersion(),
 			themeHint,
 			prefScale: prefs.scale,
 			prefsUrl: "/prefs",

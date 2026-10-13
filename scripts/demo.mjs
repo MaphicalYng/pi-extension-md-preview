@@ -259,6 +259,11 @@ if (smoke) {
 	if (!html3.includes("缓存命中率提升")) failures.push("页面未内嵌回复内容");
 	if (!html3.includes("mdp-qa-hl")) failures.push("页面缺少橙色高亮样式");
 
+	// 页脚应显示当前版本：提交日期 + 短 commit id。
+	const shortHash = execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+	if (!html3.includes("doc-foot")) failures.push("页面缺少页脚");
+	if (!html3.includes(shortHash)) failures.push(`页脚未显示当前 commit id（${shortHash}）`);
+
 	await server.shutdown("smoke 完成");
 	rmSync(tmpConfig, { recursive: true, force: true });
 	if (failures.length) {

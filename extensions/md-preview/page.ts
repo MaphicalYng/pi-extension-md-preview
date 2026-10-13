@@ -41,6 +41,8 @@ export interface PageOptions {
 	askUrl?: string;
 	/** Existing Q&A entries embedded at render time so cards survive reloads. */
 	qa?: PageQaEntry[];
+	/** Footer version stamp（如 2026-10-13 · 9311172）；省略 = 页脚不显示版本。 */
+	version?: string | null;
 }
 
 const THEME_BOOT = `<script>
@@ -1409,7 +1411,7 @@ function icon(name: string): string {
 }
 
 export function renderPage(options: PageOptions): string {
-	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefsUrl, askUrl, qa } = options;
+	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefsUrl, askUrl, qa, version } = options;
 	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, qa: qa ?? [] }).replace(/</g, "\\u003c");
 	const hintAttr = themeHint ? ` data-theme-hint="${escapeHtml(themeHint)}"` : "";
 	const scaleAttr = typeof prefScale === "number" && isFinite(prefScale) ? ` data-pref-scale="${prefScale}"` : "";
@@ -1461,6 +1463,7 @@ ${bodyHtml}
 		<footer class="doc-foot">
 			<span>pi &middot; md-preview</span>
 			<span>&middot;</span>
+			${version ? `<span>版本 ${escapeHtml(version)}</span><span>&middot;</span>` : ""}
 			<span>内容实时渲染自源文件，关闭本页面后预览服务自动退出</span>
 		</footer>
 	</main>
