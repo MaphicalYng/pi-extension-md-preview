@@ -137,6 +137,17 @@ function resolveVersion(): string | null {
 	return cachedVersion;
 }
 
+let cachedMermaidPath: string | null | undefined;
+
+/** vendored mermaid ESM 单文件路径（extensions/md-preview/vendor/mermaid.esm.min.mjs）。 */
+function resolveMermaidVendor(): string | null {
+	if (cachedMermaidPath !== undefined) return cachedMermaidPath;
+	const here = typeof __dirname === "string" ? __dirname : process.cwd();
+	const rootDir = findExtensionRoot(here);
+	cachedMermaidPath = rootDir ? path.join(rootDir, "extensions", "md-preview", "vendor", "mermaid.esm.min.mjs") : null;
+	return cachedMermaidPath;
+}
+
 const CONTENT_TYPES: Record<string, string> = {
 	txt: "text/plain; charset=utf-8",
 	md: "text/markdown; charset=utf-8",
@@ -447,6 +458,7 @@ export class PreviewServer {
 			res.end();
 			return;
 		}
+		if (p === "/mermaid.mjs") return this.serveMermaid(res);
 		if (p.startsWith("/asset/")) return this.serveAsset(res, p.slice("/asset/".length));
 		const m = p.match(/^\/doc\/([^/]+)(\/events|\/close|\/ask)?$/);
 		if (m) {
@@ -595,6 +607,25 @@ export class PreviewServer {
 		}
 		res.statusCode = 204;
 		res.end();
+	}
+
+	/** 同源提供 vendored mermaid ESM 单文件（页面含图表时动态 import('/mermaid.mjs')，不走 CDN）。 */
+	private async serveMermaid(res: http.ServerResponse): Promise<void> {
+		const filePath = resolveMermaidVendor();
+		if (!filePath) {
+			notFound(res, "mermaid not found");
+			return;
+		}
+		try {
+			const data = await fs.promises.readFile(filePath);
+			res.statusCode = 200;
+			res.setHeader("Content-Type", "text/javascript; charset=utf-8");
+			res.setHeader("Cache-Control", "no-cache");
+			res.setHeader("X-Content-Type-Options", "nosniff");
+			res.end(data);
+		} catch {
+			notFound(res, "mermaid not found");
+		}
 	}
 
 	private async serveAsset(res: http.ServerResponse, token: string): Promise<void> {

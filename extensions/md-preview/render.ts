@@ -105,6 +105,11 @@ export function renderMarkdown(source: string, options: RenderOptions = {}): Ren
 			},
 			code(token: Tokens.Code) {
 				const lang = (token.lang ?? "").trim().split(/\s+/)[0] ?? "";
+				// mermaid 图表块输出裸 pre 占位（含转义源码），由 page.ts 识别 .mermaid
+				// 并加载同源运行时绘图，不进代码块增强（code-block / code-head）流程。
+				if (lang.toLowerCase() === "mermaid") {
+					return `<pre class="mermaid">${escapeHtml(token.text)}</pre>\n`;
+				}
 				const label = lang ? escapeHtml(lang) : "text";
 				const codeHtml = escapeHtml(token.text);
 				return (

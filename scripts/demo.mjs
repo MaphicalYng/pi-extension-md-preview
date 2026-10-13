@@ -71,6 +71,15 @@ export async function withRetry<T>(fn: () => Promise<T>, attempts = 5): Promise<
 > [!NOTE]
 > 上限 8 秒的退避窗口是基于现网重放数据确定的。
 
+## 架构示意
+
+\`\`\`mermaid
+flowchart TD
+    浏览器 --> 预览服务
+    预览服务 --> 文件监听
+    文件监听 -->|SSE 变更推送| 浏览器
+\`\`\`
+
 ## 下一步计划
 
 - 优先级 P0：完成离线任务切换（预计 3 人周）。
@@ -100,7 +109,8 @@ const demoDir = join(root, ".demo");
 mkdirSync(demoDir, { recursive: true });
 const report = join(demoDir, "sample-report.md");
 const appendix = join(demoDir, "sample-appendix.md");
-if (!existsSync(report)) writeFileSync(report, SAMPLE_REPORT, "utf8");
+// 冒烟测试固定重写为模板内容，保证断言可复现（.demo 下可能残留旧样例）。
+if (!existsSync(report) || smoke) writeFileSync(report, SAMPLE_REPORT, "utf8");
 if (!existsSync(appendix)) writeFileSync(appendix, SAMPLE_APPENDIX, "utf8");
 
 /* 4. Start the preview server against the sample report. */
@@ -145,6 +155,12 @@ if (smoke) {
 	const probe = renderMarkdown('裸文本 <script>alert("xss")</script> 与 <img src=x onerror=alert(1)>');
 	if (probe.html.includes("<script") || probe.html.includes("<img")) failures.push("raw HTML 未被转义（存在可执行标签）");
 	if (!probe.html.includes("&lt;script&gt;")) failures.push("raw HTML 未按转义文本显示");
+
+	// mermaid 围栏块应渲染为裸 pre 占位（page.ts 负责绘图），不得包裹代码块增强结构。
+	if (!html.includes('<pre class="mermaid">')) failures.push("页面缺少 mermaid 占位结构");
+	const mermaidProbe = renderMarkdown("```mermaid\ngraph TD; A-->B\n```");
+	if (!mermaidProbe.html.includes('<pre class="mermaid">')) failures.push("mermaid 代码块未渲染为裸 pre 占位");
+	if (mermaidProbe.html.includes("code-block")) failures.push("mermaid 代码块不应包含 code-block 结构");
 
 	const index = await fetch(`http://127.0.0.1:${server.port}/`);
 	if (!index.ok) failures.push(`GET / -> ${index.status}`);

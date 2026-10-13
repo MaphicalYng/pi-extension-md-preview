@@ -124,6 +124,19 @@ pi --extension extensions/md-preview/index.ts
 特殊字符转义测试：<script>alert("xss")</script> & < > " '
 ```
 
+Mermaid 图表（`mermaid` 语言围栏）：应渲染为图表而非代码块（无语言标签、无复制按钮），源码按转义文本兜底显示：
+
+```mermaid
+sequenceDiagram
+    participant 用户
+    participant 预览服务
+    participant Agent
+    用户->>预览服务: 打开预览页面
+    预览服务->>Agent: 选中提问（sendUserMessage）
+    Agent->>预览服务: md_preview_reply 回复
+    预览服务->>用户: SSE 推送回复卡片
+```
+
 ## 六、链接路由与图片资源
 
 - 相对 Markdown 链接（应在预览内同页打开新文档）：[项目 README](../README.md)

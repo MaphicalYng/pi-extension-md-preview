@@ -41,6 +41,15 @@ TOC、主题偏好与问答数据，事件流（SSE）负责推送文档更新�
 server.onAsk = (qa) => sessionMessenger?.(formatAskMessage(qa));
 ```
 
+## 架构示意
+
+```mermaid
+flowchart TD
+    浏览器 --> 预览服务
+    预览服务 --> 文件监听
+    文件监听 -->|SSE 变更推送| 浏览器
+```
+
 ## 下一步计划
 
 1. 在预览页里**选中任意一段文字**

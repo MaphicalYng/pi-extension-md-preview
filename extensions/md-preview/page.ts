@@ -98,6 +98,7 @@ const PAGE_CSS = `
 	--inline-code-bg: #f0f2f6;
 	--mark-bg: rgba(255, 214, 102, 0.45);
 	--quote-bg: #f6f7fa;
+	--mmd-err: #e0a03c;
 	--shadow-1: 0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 3px rgba(16, 24, 40, 0.06);
 	--shadow-2: 0 8px 24px rgba(16, 24, 40, 0.10);
 	--topbar-bg: rgba(251, 251, 253, 0.82);
@@ -120,6 +121,7 @@ const PAGE_CSS = `
 	--inline-code-bg: #1a2129;
 	--mark-bg: rgba(255, 214, 102, 0.25);
 	--quote-bg: #131922;
+	--mmd-err: #e2ab5c;
 	--shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35);
 	--shadow-2: 0 8px 28px rgba(0, 0, 0, 0.45);
 	--topbar-bg: rgba(14, 17, 22, 0.82);
@@ -460,6 +462,37 @@ body {
 :root[data-theme="dark"] .tok-n { color: #c39bf0; }
 :root[data-theme="dark"] .tok-y { color: #ef9267; }
 :root[data-theme="dark"] .tok-t { color: #6fc2d8; }
+
+/* ---------- mermaid 图表 ---------- */
+
+.content pre.mermaid,
+.content .mermaid-rendered {
+	max-width: 100%;
+	margin: 1.5em auto;
+	padding: 18px;
+	background: var(--code-bg);
+	border: 0; /* 不继承代码块边框样式 */
+	border-radius: 12px;
+	overflow-x: auto;
+}
+.content pre.mermaid {
+	font-family: var(--font-mono);
+	font-size: 0.855em;
+	line-height: 1.7;
+	white-space: pre;
+}
+.content .mermaid-rendered { text-align: center; }
+.content pre.mermaid svg,
+.content .mermaid-rendered svg { max-width: 100%; height: auto; }
+
+/* 加载中：占位 pre（转义源码）脉冲提示 */
+.content pre.mermaid[data-status="loading"] { animation: mmdPulse 1.3s ease-in-out infinite; }
+@keyframes mmdPulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.45; }
+}
+/* 渲染失败：保持普通源码样式，仅加提示色边框 */
+.content pre.mermaid[data-status="error"] { border: 1px solid var(--mmd-err); }
 
 /* ---------- tables ---------- */
 
@@ -804,6 +837,8 @@ const PAGE_JS = `
 			btns[i].classList.toggle("active", on);
 			btns[i].setAttribute("aria-pressed", on ? "true" : "false");
 		}
+		// 主题切换后按新主题重渲染已渲染的 mermaid 图表（见 mermaid 图表小节）
+		rerenderMermaidForTheme();
 	}
 	document.addEventListener("click", function (e) {
 		var t = e.target;
@@ -1059,6 +1094,8 @@ const PAGE_JS = `
 		for (var j = 0; j < bare.length; j++) {
 			var pre = bare[j];
 			if (pre.closest && pre.closest(".code-block")) continue;
+			// mermaid 图表块保持裸 pre（pre.mermaid 及 .mermaid 内部），由 renderMermaidBlocks 负责，不包 code-block
+			if (pre.classList.contains("mermaid") || (pre.closest && pre.closest(".mermaid"))) continue;
 			var wrap = document.createElement("div");
 			wrap.className = "code-block";
 			wrap.setAttribute("data-lang", "text");
@@ -1095,6 +1132,110 @@ const PAGE_JS = `
 		}
 	}
 
+	/* ---------- mermaid 图表（懒加载同源 /mermaid.mjs，完全离线） ---------- */
+
+	var mermaidPromise = null;
+	var mermaidSeq = 0;      // mermaid.render 要求 id 每次唯一
+	var mermaidTheme = "";   // 已 initialize 的主题；主题切换时先 initialize 再渲染
+
+	// 只有文档里存在 pre.mermaid 时才会调用；加载失败清空缓存以便下次重试
+	function loadMermaid() {
+		if (!mermaidPromise) {
+			mermaidPromise = import("/mermaid.mjs").catch(function (e) {
+				mermaidPromise = null;
+				throw e;
+			});
+		}
+		return mermaidPromise;
+	}
+
+	// 渲染单个块：成功后用相邻 div.mermaid-rendered 承载 svg，pre 藏起留作源码备份；
+	// 失败保留转义源码可见（pre 本身就是转义源码），绝不向外抛错。
+	function renderMermaidOne(mermaid, pre) {
+		try {
+			var id = "mmd-" + (++mermaidSeq);
+			mermaid.render(id, pre.textContent).then(function (r) {
+				var svg = r && r.svg ? r.svg : "";
+				// pre 可能已被 SSE 更新整体替换，此时不能再插入 DOM
+				if (!svg || !pre.parentNode) throw new Error("mermaid empty svg");
+				var box = document.createElement("div");
+				box.className = "mermaid-rendered";
+				box.innerHTML = svg;
+				pre.parentNode.insertBefore(box, pre.nextSibling);
+				pre.style.display = "none";
+				pre.setAttribute("data-mmd", "done");
+				pre.setAttribute("data-status", "done");
+			}).catch(function (e) {
+				try {
+					pre.style.display = "";
+					pre.setAttribute("data-status", "error");
+				} catch (err) { /* 节点可能已被替换，忽略 */ }
+				console.warn("[md-preview] mermaid 渲染失败：", e);
+			});
+		} catch (e) {
+			try { pre.setAttribute("data-status", "error"); } catch (err) { /* ignore */ }
+			console.warn("[md-preview] mermaid 渲染失败：", e);
+		}
+	}
+
+	// 渲染 scope 内未处理（无 data-mmd 标记）的 pre.mermaid
+	function renderMermaidBlocks(scope) {
+		var list = [];
+		try {
+			var nodes = (scope || document).querySelectorAll("pre.mermaid");
+			for (var i = 0; i < nodes.length; i++) {
+				if (nodes[i].getAttribute("data-mmd")) continue;
+				nodes[i].setAttribute("data-mmd", "pending");   // 防止并发调用重复渲染
+				nodes[i].setAttribute("data-status", "loading");
+				list.push(nodes[i]);
+			}
+		} catch (e) {
+			console.warn("[md-preview] mermaid 扫描失败：", e);
+			return;
+		}
+		if (!list.length) return;
+		loadMermaid().then(function (mod) {
+			var mermaid = (mod && mod.default) || mod;
+			// 全局只 initialize 一次主题；主题切换后重新 initialize 再渲染
+			var theme = root.dataset.theme === "dark" ? "dark" : "default";
+			if (mermaidTheme !== theme) {
+				mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: theme });
+				mermaidTheme = theme;
+			}
+			for (var i = 0; i < list.length; i++) renderMermaidOne(mermaid, list[i]);
+		}).catch(function (e) {
+			// mermaid 加载/初始化失败：全部回退为源码可见
+			for (var i = 0; i < list.length; i++) {
+				try {
+					list[i].style.display = "";
+					list[i].setAttribute("data-status", "error");
+				} catch (err) { /* ignore */ }
+			}
+			console.warn("[md-preview] mermaid 加载失败：", e);
+		});
+	}
+
+	// 主题切换后重渲染：删掉旧 div.mermaid-rendered、恢复 pre 显示，再按新主题渲染
+	function rerenderMermaidForTheme() {
+		try {
+			var done = document.querySelectorAll('pre.mermaid[data-mmd="done"]');
+			if (!done.length) return;
+			for (var i = 0; i < done.length; i++) {
+				var pre = done[i];
+				var box = pre.nextElementSibling;
+				if (box && box.classList.contains("mermaid-rendered") && box.parentNode) {
+					box.parentNode.removeChild(box);
+				}
+				pre.style.display = "";
+				pre.removeAttribute("data-mmd");
+				pre.removeAttribute("data-status");
+			}
+			renderMermaidBlocks(document);
+		} catch (e) {
+			console.warn("[md-preview] mermaid 主题重渲染失败：", e);
+		}
+	}
+
 	/* ---------- live updates ---------- */
 
 	var livePill = document.getElementById("livePill");
@@ -1119,6 +1260,7 @@ const PAGE_JS = `
 		}
 		buildToc(d.toc || []);
 		enhanceCode(content);
+		renderMermaidBlocks(content);
 		restoreQaHighlights();
 		onScroll();
 		if (!quiet) toast("文档已更新");
@@ -1408,6 +1550,7 @@ const PAGE_JS = `
 	setScale(scale);
 	buildToc(DOC.toc || []);
 	enhanceCode(document);
+	renderMermaidBlocks(document);
 	var bootQa = DOC.qa || [];
 	for (var bi = 0; bi < bootQa.length; bi++) addQa(bootQa[bi]);
 	onScroll();

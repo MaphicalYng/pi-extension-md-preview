@@ -18,10 +18,12 @@
 	},
 	"devDependencies": {
 		"@types/node": "^24.0.0",
+		"mermaid": "^11",
 		"typescript": "^5.8.0"
 	},
 	"scripts": {
 		"check": "node scripts/check.mjs",
-		"demo": "node scripts/demo.mjs"
+		"demo": "node scripts/demo.mjs",
+		"vendor:mermaid": "node scripts/vendor-mermaid.mjs"
 	}
 }
