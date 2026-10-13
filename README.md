@@ -13,8 +13,9 @@
 | Agent 无需保持工作 | 工具立即返回；预览服务独立运行。用户关闭全部标签页 8 秒后（或浏览器标签从未打开 5 分钟后）服务自动退出；Pi 会话结束时兜底退出 |
 | 界面专业简洁现代 | 极简阅读版式、纸面纹理背景、页面进度条、目录导航（滚动高亮）、代码块「语言标签 + 一键复制」 |
 | 必要动效 | 主题切换平滑过渡、TOC 指示器滑动、按钮悬停微交互、内容刷新淡入、滚动显示的「回到顶部」 |
-| 明亮 / 黑暗模式 | 三档：跟随系统 / 强制明亮 / 强制黑暗（导航栏一键切换，选择持久化到 `localStorage`） |
-| 字体大小调节 | 五档 A- / A+（87.5% – 125%，持久化） |
+| 明亮 / 黑暗模式 | 三档：跟随系统 / 强制明亮 / 强制黑暗（导航栏一键切换） |
+| 字体大小调节 | 五档 A- / A+（87.5% – 125%） |
+| 用户级全局记忆 | 主题与字号持久化到用户配置文件（`$XDG_CONFIG_HOME/md-preview/settings.json`），跨会话、跨随机端口生效；浏览器 `localStorage` 作为同端口内的加速缓存 |
 | 附赠 | **实时同步**：源文件被修改后页面自动刷新（SSE），无需重新调用工具 |
 
 ## 快速开始
@@ -92,7 +93,8 @@ extensions/md-preview/
 ├── index.ts       # 扩展入口：md_preview 工具 + /md-preview 命令 + 会话退出兜底
 ├── render.ts      # 零依赖 Markdown → HTML 渲染器（GFM 子集 + 代码高亮）
 ├── page.ts        # 页面模板：CSS 主题系统 + 交互脚本（TOC/主题/字号/实时刷新）
-├── server.ts      # 本地 HTTP 服务：路由、SSE 实时同步、viewer 计数、自动退出
+├── server.ts      # 本地 HTTP 服务：路由、SSE 实时同步、viewer 计数、自动退出、/prefs
+├── prefs.ts       # 用户级偏好（主题/字号）：读取、校验、原子落盘、防抖写入
 └── browser.ts     # 跨平台默认浏览器打开
 scripts/
 ├── check.mjs      # npm run check：链接宿主类型定义并做严格 TypeScript 检查
@@ -108,7 +110,25 @@ Pi 通过 jiti 直接加载 TypeScript 源码，无需构建步骤；`tsconfig.j
 | `MD_PREVIEW_HOST` | 绑定地址，默认 `127.0.0.1`（安全默认，不对外网开放） |
 | `MD_PREVIEW_THEME` | 初始主题提示 `system` / `light` / `dark`（仅在用户未手动选择主题前生效） |
 
-用户手动切换的主题与字号保存在浏览器 `localStorage`（`mdp.theme` / `mdp.scale`），优先级高于环境变量。
+### 用户级偏好持久化
+
+主题与字号的持久化分两层：
+
+1. **用户级（全局）**：`$XDG_CONFIG_HOME/md-preview/settings.json`（未设置 `XDG_CONFIG_HOME` 时为 `~/.config/md-preview/settings.json`）。页面上的切换会防抖上报到 `POST /prefs`，原子落盘；下次任意会话、任意随机端口的预览页都会带上这份偏好。
+2. **浏览器 `localStorage`**（`mdp.theme` / `mdp.scale`）：同源加速缓存，同一会话内立即生效；跨端口失效时由用户级偏好兜底。
+
+加载优先级：`localStorage`（同端口内最近一次操作）> 用户偏好文件 > `MD_PREVIEW_THEME` 环境变量 > 内置默认（跟随系统、100%）。
+
+偏好文件示例：
+
+```json
+{
+  "theme": "dark",
+  "scale": 1.15
+}
+```
+
+向 `POST /prefs` 发送显式 `null`（如 `{"theme": null}`）可将对应键重置回默认。
 
 ## 安全考量
 

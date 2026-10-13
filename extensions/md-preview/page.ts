@@ -21,8 +21,12 @@ export interface PageOptions {
 	updateUrl: string;
 	/** POST endpoint used by the close beacon. */
 	closeUrl: string;
-	/** Optional default theme preference encoded into the URL by the tool. */
+	/** Optional default theme from MD_PREVIEW_THEME; user-level persisted prefs override it server-side. */
 	themeHint?: "system" | "light" | "dark";
+	/** User-level persisted font scale (0.7–1.6), served from the prefs file; null/undefined = 未设置。 */
+	prefScale?: number | null;
+	/** POST endpoint that persists theme/scale changes into the user-level prefs file. */
+	prefsUrl?: string;
 }
 
 const THEME_BOOT = `<script>
@@ -30,12 +34,21 @@ const THEME_BOOT = `<script>
 	var d = document.documentElement;
 	var t = null, s = null;
 	try { t = localStorage.getItem("mdp.theme"); s = localStorage.getItem("mdp.scale"); } catch (e) {}
-	var hint = d.getAttribute("data-theme-hint");
-	if (t !== "light" && t !== "dark") t = (hint === "light" || hint === "dark" || hint === "system") ? hint : "system";
+	// 主题优先级：本机 localStorage（同端口内最近一次操作）> hint——服务端渲染
+	// 时已把用户级偏好文件合并进 hint（用户偏好 > MD_PREVIEW_THEME 环境变量），
+	// 再往下回退跟随系统。
+	if (t !== "light" && t !== "dark" && t !== "system") {
+		var hint = d.getAttribute("data-theme-hint");
+		t = (hint === "light" || hint === "dark" || hint === "system") ? hint : "system";
+	}
 	d.dataset.themePref = t;
 	d.dataset.theme = t === "system"
 		? (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
 		: t;
+	if (!(parseFloat(s) > 0)) {
+		var ps = parseFloat(d.getAttribute("data-pref-scale") || "");
+		if (ps > 0) s = String(ps);
+	}
 	if (s) d.style.setProperty("--font-scale", s);
 })();
 </script>`;
@@ -594,6 +607,34 @@ const PAGE_JS = `
 	var root = document.documentElement;
 	var motionOK = !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 
+	/* ---------- user-level prefs (server-side, cross-session) ---------- */
+
+	var prefsUrl = DOC.prefsUrl || "";
+	var prefsTimer = null;
+	var prefsPending = null;
+	function flushPrefs() {
+		if (prefsTimer) { clearTimeout(prefsTimer); prefsTimer = null; }
+		if (!prefsPending || !prefsUrl) return;
+		var body = JSON.stringify(prefsPending);
+		prefsPending = null;
+		try {
+			if (window.fetch) {
+				window.fetch(prefsUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: body, keepalive: true }).catch(function () {});
+			} else if (navigator.sendBeacon) {
+				navigator.sendBeacon(prefsUrl, new Blob([body], { type: "application/json" }));
+			}
+		} catch (e) { /* 偏好持久化是尽力而为，不阻塞交互 */ }
+	}
+	function savePrefs(patch) {
+		if (!prefsUrl) return;
+		prefsPending = prefsPending || {};
+		for (var k in patch) {
+			if (Object.prototype.hasOwnProperty.call(patch, k)) prefsPending[k] = patch[k];
+		}
+		if (!prefsTimer) prefsTimer = setTimeout(flushPrefs, 250);
+	}
+	window.addEventListener("pagehide", flushPrefs);
+
 	/* ---------- theme ---------- */
 
 	var themePref = root.dataset.themePref || "system";
@@ -607,7 +648,10 @@ const PAGE_JS = `
 		themePref = pref;
 		root.dataset.themePref = pref;
 		root.dataset.theme = resolveTheme(pref);
-		if (persist !== false) { try { localStorage.setItem("mdp.theme", pref); } catch (e) {} }
+		if (persist !== false) {
+			try { localStorage.setItem("mdp.theme", pref); } catch (e) {}
+			savePrefs({ theme: pref });
+		}
 		var btns = document.querySelectorAll("[data-theme-set]");
 		for (var i = 0; i < btns.length; i++) {
 			var on = btns[i].getAttribute("data-theme-set") === pref;
@@ -642,6 +686,7 @@ const PAGE_JS = `
 		scale = Math.min(1.6, Math.max(0.7, Math.round(v * 100) / 100));
 		root.style.setProperty("--font-scale", String(scale));
 		try { localStorage.setItem("mdp.scale", String(scale)); } catch (e) {}
+		savePrefs({ scale: scale });
 		fontValue.textContent = Math.round(scale * 100) + "%";
 	}
 	document.getElementById("fontMinus").addEventListener("click", function () { setScale(scale - 0.1); });
@@ -974,12 +1019,13 @@ function icon(name: string): string {
 }
 
 export function renderPage(options: PageOptions): string {
-	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint } = options;
-	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl }).replace(/</g, "\\u003c");
+	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefsUrl } = options;
+	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl }).replace(/</g, "\\u003c");
 	const hintAttr = themeHint ? ` data-theme-hint="${escapeHtml(themeHint)}"` : "";
+	const scaleAttr = typeof prefScale === "number" && isFinite(prefScale) ? ` data-pref-scale="${prefScale}"` : "";
 
 	return `<!doctype html>
-<html lang="zh-CN"${hintAttr}>
+<html lang="zh-CN"${hintAttr}${scaleAttr}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

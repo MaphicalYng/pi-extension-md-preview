@@ -13,6 +13,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { renderMarkdown, escapeHtml, type RenderedDoc, type TocItem } from "./render";
 import { renderPage } from "./page";
+import { loadPrefs, savePrefsDebounced, normalizeTheme, clampScale, type ThemePref } from "./prefs";
 
 const IDLE_MS = 8_000; // shutdown this long after the last tab goes away
 const NEVER_OPENED_MS = 5 * 60_000; // shutdown if nobody ever opened a tab
@@ -284,6 +285,14 @@ export class PreviewServer {
 		const url = new URL(req.url ?? "/", "http://127.0.0.1");
 		const p = url.pathname;
 		if (p === "/" || p === "/index.html") return this.serveIndex(res);
+		if (p === "/prefs") {
+			if (req.method === "GET") return this.servePrefs(res);
+			if (req.method === "POST") return this.serveSavePrefs(req, res);
+			res.statusCode = 405;
+			res.setHeader("Allow", "GET, POST");
+			res.end("method not allowed");
+			return;
+		}
 		if (p === "/favicon.ico") {
 			res.statusCode = 204;
 			res.end();
@@ -337,8 +346,11 @@ export class PreviewServer {
 	private async serveDoc(res: http.ServerResponse, doc: DocState): Promise<void> {
 		await this.refreshIfStale(doc);
 		const cid = `c${++this.connSeq}`;
-		const theme = process.env.MD_PREVIEW_THEME;
-		const themeHint = theme === "light" || theme === "dark" || theme === "system" ? theme : undefined;
+		// 用户级持久化偏好优先于 MD_PREVIEW_THEME 环境变量提示；
+		// 两者都不存在时页面回退到跟随系统。
+		const prefs = loadPrefs();
+		const env = process.env.MD_PREVIEW_THEME;
+		const themeHint = prefs.theme ?? (env === "light" || env === "dark" || env === "system" ? env : undefined);
 		const html = renderPage({
 			docId: doc.id,
 			title: this.titleFor(doc),
@@ -348,6 +360,8 @@ export class PreviewServer {
 			updateUrl: `/doc/${doc.id}/events?c=${cid}&v=${doc.version}`,
 			closeUrl: `/doc/${doc.id}/close?c=${cid}`,
 			themeHint,
+			prefScale: prefs.scale,
+			prefsUrl: "/prefs",
 		});
 		res.statusCode = 200;
 		res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -441,6 +455,49 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 		res.setHeader("Content-Type", "text/html; charset=utf-8");
 		res.setHeader("Cache-Control", "no-store");
 		res.end(html);
+	}
+
+	// ------------------------------------------------------------- prefs
+
+	/** 当前用户级偏好（调试 / 页面自检用）。 */
+	private servePrefs(res: http.ServerResponse): void {
+		const prefs = loadPrefs();
+		res.statusCode = 200;
+		res.setHeader("Content-Type", "application/json; charset=utf-8");
+		res.setHeader("Cache-Control", "no-store");
+		res.end(JSON.stringify(prefs));
+	}
+
+	/**
+	 * 页面在主题 / 字号变化时上报，合并进用户级偏好文件。
+	 * 非法字段被忽略而不是报错——前端钳制值域，这里只做兜底校验。
+	 */
+	private async serveSavePrefs(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+		const body = await readBody(req);
+		let parsed: unknown = null;
+		try {
+			parsed = JSON.parse(body);
+		} catch {
+			/* 空或非 JSON 主体按“无补丁”处理 */
+		}
+		const patch: { theme?: ThemePref | null; scale?: number | null } = {};
+		if (parsed && typeof parsed === "object") {
+			const obj = parsed as Record<string, unknown>;
+			// 非法值忽略；显式 null 表示重置回默认。
+			if (obj.theme !== undefined) {
+				const theme = normalizeTheme(obj.theme);
+				if (theme !== null || obj.theme === null) patch.theme = theme;
+			}
+			if (obj.scale !== undefined) {
+				const scale = clampScale(obj.scale);
+				if (scale !== null || obj.scale === null) patch.scale = scale;
+			}
+		}
+		const prefs = savePrefsDebounced(patch);
+		res.statusCode = 200;
+		res.setHeader("Content-Type", "application/json; charset=utf-8");
+		res.setHeader("Cache-Control", "no-store");
+		res.end(JSON.stringify(prefs));
 	}
 
 	// ------------------------------------------------------------- lifecycle

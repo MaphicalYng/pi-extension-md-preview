@@ -11,6 +11,7 @@
 	},
 	"include": [
 		"extensions/md-preview/render.ts",
+		"extensions/md-preview/prefs.ts",
 		"extensions/md-preview/page.ts",
 		"extensions/md-preview/server.ts",
 		"extensions/md-preview/browser.ts"
