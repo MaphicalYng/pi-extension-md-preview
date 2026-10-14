@@ -130,6 +130,7 @@ const mdPreviewTool = defineTool({
 	promptGuidelines: [
 		"Mandatory rule: when the output is structured content (a report, a document, multi-paragraph/multi-section text, a table, a list, a code example, etc.) longer than 150 characters, you must write it to a .md file and call md_preview to present it in the browser; never output it only in the terminal, and do not hesitate or downgrade to a plain-text reply.",
 		"When presenting a long report or Markdown document that the user needs to read carefully, write it to a .md file and call md_preview to present it in the browser instead of only printing it in the terminal.",
+		"ui_lang is REQUIRED on every call — never omit it: choose it based on the user's language (\"zh\" when the user communicates in Chinese, otherwise \"en\").",
 		"After md_preview returns, share the page URL with the user and continue with your other work; do not wait for the user to close the page, and do not call the tool repeatedly just to refresh the page.",
 	],
 	parameters: Type.Object({
@@ -138,13 +139,12 @@ const mdPreviewTool = defineTool({
 		}),
 		title: Type.Optional(Type.String({ description: "Page title; defaults to the first level-1 heading of the document" })),
 		open_browser: Type.Optional(Type.Boolean({ description: "Whether to open a browser tab automatically; default true" })),
-		ui_lang: Type.Optional(
-			Type.Union([Type.Literal("en"), Type.Literal("zh")], {
-				description:
-					'UI language of the preview page ("en" or "zh"). Falls back to $MD_PREVIEW_LANG, then "en". ' +
-					"Passing a different value updates the language of an already-open document.",
-			}),
-		),
+		ui_lang: Type.Union([Type.Literal("en"), Type.Literal("zh")], {
+			description:
+				'UI language of the preview page: "en" or "zh". REQUIRED — never omit it. ' +
+				'Always choose it based on the user\'s language: use "zh" when the user communicates in Chinese, otherwise use "en". ' +
+				"Passing a different value on a later call updates the language of an already-open document.",
+		}),
 	}),
 	annotations: {
 		readOnlyHint: true,

@@ -14,7 +14,7 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 | Mermaid diagrams | `mermaid` fenced blocks render as diagrams; the mermaid runtime is lazy-loaded from the preview server's own origin (flowcharts, sequence diagrams, …) |
 | Agent-initiated preview + auto-open browser | The `md_preview` tool starts a local server and opens the page in the system default browser (macOS `open` / Linux `xdg-open` / Windows `start`), de-duplicating across tabs (an already-open tab is reused) |
 | No babysitting | The tool returns immediately and the server runs on its own. It exits 8 s after the last tab closes (or 5 min after start if no tab ever opened), with a final safety exit when the Pi session shuts down |
-| Bilingual UI (en / zh) | The agent picks the page UI language at startup via the `ui_lang` tool parameter (or `MD_PREVIEW_LANG`); an in-page 中/EN switch lets the reader override it (remembered in `localStorage`) |
+| Bilingual UI (en / zh) | The agent always picks the page UI language explicitly via the required `ui_lang` tool parameter, chosen from the user's language; an in-page 中/EN switch lets the reader override it (remembered in `localStorage`) |
 | Clean, modern reading experience | Minimal reading layout, paper-texture backgrounds, page progress bar, table of contents with scroll highlighting, code blocks with language label + one-click copy |
 | Deliberate motion | Smooth theme transitions, sliding TOC indicator, hover micro-interactions, fade-in on content refresh, scroll-aware back-to-top |
 | Light / dark mode | Three modes: follow system / forced light / forced dark (one click in the toolbar) |
@@ -48,7 +48,7 @@ pi --extension /Users/maphicalyng/code/mk_projects/pi-extension-md-preview/exten
 {
   "file": "/path/to/report.md",        // required: Markdown file (absolute, or relative to cwd)
   "title": "Q3 Infrastructure Migration Report",  // optional: page title; defaults to the first H1
-  "ui_lang": "en",                     // optional: "en" | "zh"; falls back to $MD_PREVIEW_LANG, then "en"
+  "ui_lang": "en",                     // required: "en" | "zh" — always choose based on the user's language
   "open_browser": true                 // optional: default true, auto-open a browser tab
 }
 ```
@@ -86,7 +86,7 @@ Agent writes .md ──► md_preview tool ──► local preview server (127.0
 - **Process lifecycle**: the server starts lazily on first use (tool or command) and never blocks the tool's return; exit decisions run in a lightweight 3-second patrol loop with no external dependencies.
 - **Ask-about-selection pipeline**: the page POSTs `/doc/{id}/ask` → the server stores the Q&A record and broadcasts an SSE `ask` → the extension injects the question into the Pi session via `pi.sendUserMessage` (`deliverAs: "followUp"`); after reading the relevant files, the agent calls `md_preview_reply` → the server renders the Markdown answer and broadcasts SSE `answer` → a reply card appears beside the document in every tab showing it, with the quoted text highlighted in orange.
 - **Cross-tab de-duplication**: multiple tabs of the same file share one document render; edits refresh all tabs together.
-- **UI language**: resolution order is tool parameter `ui_lang` > `MD_PREVIEW_LANG` environment variable > `"en"` (resolved when a document is first opened). An in-page 中/EN switch overrides the server-sent language and is remembered per browser origin in `localStorage` (`mdp.lang`). The language is intentionally *not* written to the user-level prefs file.
+- **UI language**: the `md_preview` tool requires an explicit `ui_lang` (`"en"` or `"zh"`), which the agent chooses based on the user's language. The `/md-preview` command resolves it as `MD_PREVIEW_LANG` environment variable > `"en"` (when a document is first opened). An in-page 中/EN switch overrides the server-sent language and is remembered per browser origin in `localStorage` (`mdp.lang`). The language is intentionally *not* written to the user-level prefs file.
 - **Download source**: the toolbar offers one-click download of the current document's Markdown source (`GET /doc/{id}/download`, `Content-Disposition: attachment`, always read fresh from disk).
 - **Export HTML**: one click produces a standalone snapshot — the live DOM is cloned, sanitized, frozen (current theme/background/font/line-height/language), images are inlined as data URLs, and interactive-only controls (export/download buttons, ask panel, language switch) are stripped. Mermaid SVG colors stay at their snapshot-time theme (known limitation).
 - **Markdown link routing**: relative links that point to Markdown files open in-place as new previewed documents (and join live sync); links to images/attachments are served as static assets. Link resolution is confined to (session cwd ∪ previewed document directories); links outside that set are marked unavailable in the page.
@@ -126,7 +126,7 @@ Pi loads the TypeScript sources directly via jiti — no build step; `tsconfig.j
 | --- | --- |
 | `MD_PREVIEW_HOST` | Bind address, default `127.0.0.1` (safe default; never exposed to the network) |
 | `MD_PREVIEW_THEME` | Initial theme hint: `system` / `light` / `dark` (only applies until the user picks a theme) |
-| `MD_PREVIEW_LANG` | Default UI language hint: `en` / `zh` (used when the tool call omits `ui_lang`) |
+| `MD_PREVIEW_LANG` | Fallback UI language: `en` / `zh` (used by the `/md-preview` command; the `md_preview` tool always passes `ui_lang` explicitly) |
 
 ### User-level preference persistence
 

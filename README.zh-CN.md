@@ -14,7 +14,7 @@
 | Mermaid 图表 | `mermaid` 语言围栏代码块渲染为图表：前端动态加载预览服务同源提供的 mermaid 运行时，自动绘制流程图、时序图等 |
 | Agent 主动呈现 + 自动开浏览器 | `md_preview` 工具：本地起服务 → 自动用系统默认浏览器打开标签页（macOS `open` / Linux `xdg-open` / Windows `start`），跨标签页去重（已打开则复用） |
 | Agent 无需保持工作 | 工具立即返回；预览服务独立运行。用户关闭全部标签页 8 秒后（或浏览器标签从未打开 5 分钟后）服务自动退出；Pi 会话结束时兜底退出 |
-| 双语界面（中 / 英） | Agent 启动预览时通过 `ui_lang` 工具参数（或 `MD_PREVIEW_LANG` 环境变量）选择页面 UI 语言；页面右上角提供 中/EN 切换控件，读者可随时覆盖（`localStorage` 记忆） |
+| 双语界面（中 / 英） | Agent 启动预览时通过必填的 `ui_lang` 工具参数显式选择页面 UI 语言（根据用户语言选定）；页面右上角提供 中/EN 切换控件，读者可随时覆盖（`localStorage` 记忆） |
 | 界面专业简洁现代 | 极简阅读版式、纸面纹理背景、页面进度条、目录导航（滚动高亮）、代码块「语言标签 + 一键复制」 |
 | 必要动效 | 主题切换平滑过渡、TOC 指示器滑动、按钮悬停微交互、内容刷新淡入、滚动显示的「回到顶部」 |
 | 明亮 / 黑暗模式 | 三档：跟随系统 / 强制明亮 / 强制黑暗（导航栏一键切换） |
@@ -48,12 +48,12 @@ pi --extension /Users/maphicalyng/code/mk_projects/pi-extension-md-preview/exten
 {
   "file": "/path/to/report.md",   // 必填：Markdown 文件（绝对路径或相对 cwd）
   "title": "2025 Q3 基础设施迁移报告",  // 可选：页面标题，默认取文档首个一级标题
-  "ui_lang": "zh",                // 可选："en" | "zh"；缺省回退 $MD_PREVIEW_LANG，再回退 "en"
+  "ui_lang": "zh",                // 必填："en" | "zh"——必须根据用户语言选定
   "open_browser": true            // 可选：默认 true，自动打开浏览器
 }
 ```
 
-工具会返回页面地址；Agent 把地址发给用户即可继续其他工作，无需等待或轮询。对已预览的文档再次调用并传不同的 `ui_lang`，可热切换页面语言（经 SSE 实时同步到所有打开的标签页）；省略 `ui_lang` 时保持文档当前语言不变。
+工具会返回页面地址；Agent 把地址发给用户即可继续其他工作，无需等待或轮询。对已预览的文档再次调用并传不同的 `ui_lang`，可热切换页面语言（经 SSE 实时同步到所有打开的标签页）。
 
 **用户命令**：在会话里输入（支持 Tab 补全 Markdown 文件名）：
 
@@ -86,7 +86,7 @@ Agent 写 .md ──► md_preview 工具 ──► 本地预览服务（127.0.0
 - **进程生命周期**：服务按需惰性启动（首次调用工具 / 命令时），不阻塞工具返回；退出判定在每 3 秒的轻量巡检中完成，无外部依赖。
 - **选中提问链路**：页面提交 `POST /doc/{id}/ask` → 服务端落库并 SSE 广播 `ask` → 扩展经 `pi.sendUserMessage`（`deliverAs: "followUp"`）把提问注入会话；Agent 阅读相关文件后调用 `md_preview_reply` 工具 → 服务端渲染 Markdown 并 SSE 广播 `answer` → 所有打开该文档的标签页左侧出现回复卡片，原文橙色高亮。
 - **跨标签页去重**：同一文件多标签页共享一个文档渲染；源文件修改后所有标签页一起刷新。
-- **UI 语言**：解析顺序为工具参数 `ui_lang` > `MD_PREVIEW_LANG` 环境变量 > `"en"`（文档首次打开时解析）。页面内的 中/EN 切换控件优先级高于服务端下发值，并按浏览器源记忆在 `localStorage`（`mdp.lang`）。语言刻意**不**写入用户级偏好文件。
+- **UI 语言**：`md_preview` 工具要求显式传 `ui_lang`（`"en"` 或 `"zh"`），由 Agent 根据用户语言选定；`/md-preview` 命令则按 `MD_PREVIEW_LANG` 环境变量 > `"en"` 解析（文档首次打开时确定）。页面内的 中/EN 切换控件优先级高于服务端下发值，并按浏览器源记忆在 `localStorage`（`mdp.lang`）。语言刻意**不**写入用户级偏好文件。
 - **下载原文**：顶部工具栏一键下载当前文档的 Markdown 源文件（`GET /doc/{id}/download`，`Content-Disposition: attachment`，始终读磁盘最新内容）。
 - **导出 HTML**：一键生成独立快照——克隆在线 DOM、净化、冻结（当前主题/背景/字号/行距/语言）、图片内联为 data URL，并剥离纯交互控件（导出/下载按钮、提问面板、语言切换）。Mermaid 图表配色保持导出瞬间的主题（已知限制）。
 - **Markdown 链接路由**：相对链接指向 Markdown 文件时在同页打开新文档（并纳入实时同步），指向图片 / 附件时按静态资源提供；链接解析被限制在（会话工作目录 ∪ 预览文档目录）之内，其他路径的链接在浏览器中标记为不可用。
@@ -126,7 +126,7 @@ Pi 通过 jiti 直接加载 TypeScript 源码，无需构建步骤；`tsconfig.j
 | --- | --- |
 | `MD_PREVIEW_HOST` | 绑定地址，默认 `127.0.0.1`（安全默认，不对外网开放） |
 | `MD_PREVIEW_THEME` | 初始主题提示 `system` / `light` / `dark`（仅在用户未手动选择主题前生效） |
-| `MD_PREVIEW_LANG` | 默认 UI 语言提示 `en` / `zh`（工具调用省略 `ui_lang` 时生效） |
+| `MD_PREVIEW_LANG` | 兜底 UI 语言 `en` / `zh`（供 `/md-preview` 命令使用；`md_preview` 工具始终显式传 `ui_lang`） |
 
 ### 用户级偏好持久化
 
