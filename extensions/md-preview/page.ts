@@ -10,8 +10,10 @@
 import type { TocItem } from "./render";
 import { escapeHtml } from "./render";
 import type { BgPref } from "./prefs";
+import type { Lang } from "./page-i18n";
+import { normalizeLang, STRINGS } from "./page-i18n";
 
-/** 下发到页面的问答条目（answerHtml 为 null 表示待回复） */
+/** Q&A entry handed to the page (answerHtml === null means still unanswered). */
 export interface PageQaEntry {
 	id: string;
 	quote: string;
@@ -34,22 +36,27 @@ export interface PageOptions {
 	closeUrl: string;
 	/** Optional default theme from MD_PREVIEW_THEME; user-level persisted prefs override it server-side. */
 	themeHint?: "system" | "light" | "dark";
-	/** User-level persisted font scale (0.7–1.6), served from the prefs file; null/undefined = 未设置。 */
+	/** User-level persisted font scale (0.7–1.6) served from the prefs file; null/undefined = not set. */
 	prefScale?: number | null;
-	/** User-level persisted line height (1.4–2.2), served from the prefs file; null/undefined = 未设置。 */
+	/** User-level persisted line height (1.4–2.2) served from the prefs file; null/undefined = not set. */
 	prefLineHeight?: number | null;
-	/** User-level persisted reading background (white/dim/wood/cyan); null/undefined = 纯白。 */
+	/** User-level persisted reading background (white/dim/wood/cyan); null/undefined = pure white. */
 	prefBg?: BgPref | null;
 	/** GET endpoint that downloads the raw Markdown source of the current document. */
 	downloadUrl?: string;
 	/** POST endpoint that persists theme/scale changes into the user-level prefs file. */
 	prefsUrl?: string;
-	/** POST endpoint that submits a question about selected text (选中提问). */
+	/** POST endpoint that submits a question about the selected text. */
 	askUrl?: string;
 	/** Existing Q&A entries embedded at render time so cards survive reloads. */
 	qa?: PageQaEntry[];
-	/** Footer version stamp（如 2026-10-13 · 9311172）；省略 = 页脚不显示版本。 */
+	/** Footer version stamp (e.g. 2026-10-13 · 9311172); omitted = no version in the footer. */
 	version?: string | null;
+	/**
+	 * UI language chosen by the server (contract values: "en" | "zh").
+	 * Optional — missing or unrecognized values fall back to "en".
+	 */
+	lang?: Lang | (string & {}) | null;
 }
 
 const THEME_BOOT = `<script>
@@ -57,9 +64,9 @@ const THEME_BOOT = `<script>
 	var d = document.documentElement;
 	var t = null, s = null, lh = null, b = null;
 	try { t = localStorage.getItem("mdp.theme"); s = localStorage.getItem("mdp.scale"); lh = localStorage.getItem("mdp.lineHeight"); b = localStorage.getItem("mdp.bg"); } catch (e) {}
-	// 主题优先级：本机 localStorage（同端口内最近一次操作）> hint——服务端渲染
-	// 时已把用户级偏好文件合并进 hint（用户偏好 > MD_PREVIEW_THEME 环境变量），
-	// 再往下回退跟随系统。
+	// Theme priority: local localStorage (last action on this origin) > hint. The server
+	// already merged the user-level prefs file into the hint (user prefs > the
+	// MD_PREVIEW_THEME env var); the final fallback is "follow system".
 	if (t !== "light" && t !== "dark" && t !== "system") {
 		var hint = d.getAttribute("data-theme-hint");
 		t = (hint === "light" || hint === "dark" || hint === "system") ? hint : "system";
@@ -73,19 +80,30 @@ const THEME_BOOT = `<script>
 		if (ps > 0) s = String(ps);
 	}
 	if (s) d.style.setProperty("--font-scale", s);
-	// 行距优先级同字号：本机 localStorage > 服务端下发的用户级偏好（data-pref-line-height）。
+	// Line height follows the same priority as font size: local localStorage > the
+	// user-level pref pushed by the server (data-pref-line-height).
 	if (!(parseFloat(lh) > 0)) {
 		var plh = parseFloat(d.getAttribute("data-pref-line-height") || "");
 		if (plh > 0) lh = String(plh);
 	}
 	if (lh) d.style.setProperty("--line-height", lh);
-	// 阅读背景优先级同字号：本机 localStorage > 服务端下发的用户级偏好（data-pref-bg），
-	// 两者都没有时回退纯白。
+	// Reading background follows the same priority as font size: local localStorage >
+	// the user-level pref pushed by the server (data-pref-bg); with neither, pure white.
 	if (b !== "white" && b !== "dim" && b !== "wood" && b !== "cyan") {
 		var pb = d.getAttribute("data-pref-bg");
 		b = (pb === "white" || pb === "dim" || pb === "wood" || pb === "cyan") ? pb : "white";
 	}
 	d.dataset.bg = b;
+	// UI language priority mirrors the theme: localStorage (mdp.lang) > server hint
+	// (data-lang-hint) > "en"; fix <html lang> before first paint.
+	var lg = null;
+	try { lg = localStorage.getItem("mdp.lang"); } catch (e) {}
+	if (lg !== "en" && lg !== "zh") {
+		var lh2 = d.getAttribute("data-lang-hint");
+		lg = (lh2 === "en" || lh2 === "zh") ? lh2 : "en";
+	}
+	d.dataset.mdpLang = lg;
+	d.setAttribute("lang", lg === "zh" ? "zh-CN" : "en");
 })();
 </script>`;
 
@@ -148,8 +166,9 @@ const PAGE_CSS = `
 	--topbar-bg: rgba(14, 17, 22, 0.82);
 }
 
-/* ---------- 阅读背景（data-bg，默认纯白） ----------
-   只覆盖纸面相关的表面色，文字/强调色/阴影沿用所属明暗主题。 */
+/* ---------- reading background (data-bg, pure white by default) ----------
+   Only paper-related surface colors are overridden; text, accents and shadows
+   stay with the active light/dark theme. */
 
 :root[data-theme="light"][data-bg="white"] {
 	--bg: #ffffff;
@@ -197,7 +216,7 @@ const PAGE_CSS = `
 	--topbar-bg: rgba(227, 237, 236, 0.85);
 }
 
-/* 深色主题下同一背景偏好的暗色变体（色相随和，亮度保持深色档位） */
+/* Dark variants of the same background preference (matching hue, dark-theme lightness). */
 :root[data-theme="dark"][data-bg="dim"] {
 	--bg: #171512;
 	--bg-elev: #1e1c18;
@@ -358,7 +377,7 @@ body {
 .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .seg svg { width: 15px; height: 15px; }
 
-/* 阅读背景色板：圆点即该配方的纸面色 */
+/* Reading-background swatches: the dot is the paper color of that preset. */
 .seg button.bg-swatch { width: 24px; min-width: 24px; padding: 0; }
 .seg button.bg-swatch::after {
 	content: "";
@@ -371,7 +390,7 @@ body {
 .seg button.bg-swatch:hover { background: var(--accent-soft); }
 .seg button.bg-swatch.active { background: transparent; box-shadow: inset 0 0 0 1.5px var(--accent); }
 
-/* 下载当前文档 / 导出 HTML：同组内的图标按钮，<a> 与 <button> 共用样式 */
+/* Download / export HTML: icon buttons in one group; <a> and <button> share the styling. */
 .seg .dl-btn {
 	border: 0;
 	background: transparent;
@@ -604,7 +623,7 @@ body {
 :root[data-theme="dark"] .tok-y { color: #ef9267; }
 :root[data-theme="dark"] .tok-t { color: #6fc2d8; }
 
-/* ---------- mermaid 图表 ---------- */
+/* ---------- mermaid diagrams ---------- */
 
 .content pre.mermaid,
 .content .mermaid-rendered {
@@ -612,7 +631,7 @@ body {
 	margin: 1.5em auto;
 	padding: 18px;
 	background: var(--code-bg);
-	border: 0; /* 不继承代码块边框样式 */
+	border: 0; /* do not inherit code-block borders */
 	border-radius: 12px;
 	overflow-x: auto;
 }
@@ -626,13 +645,13 @@ body {
 .content pre.mermaid svg,
 .content .mermaid-rendered svg { max-width: 100%; height: auto; }
 
-/* 加载中：占位 pre（转义源码）脉冲提示 */
+/* Loading: pulse the placeholder pre (escaped source). */
 .content pre.mermaid[data-status="loading"] { animation: mmdPulse 1.3s ease-in-out infinite; }
 @keyframes mmdPulse {
 	0%, 100% { opacity: 1; }
 	50% { opacity: 0.45; }
 }
-/* 渲染失败：保持普通源码样式，仅加提示色边框 */
+/* Render failed: keep plain-source styling, only add a warning-colored border. */
 .content pre.mermaid[data-status="error"] { border: 1px solid var(--mmd-err); }
 
 /* ---------- tables ---------- */
@@ -757,7 +776,7 @@ body {
 .to-top:hover { color: var(--accent); transform: translateY(-2px); }
 .to-top svg { width: 16px; height: 16px; }
 
-/* ---------- qa rail（Agent 回复卡片） ---------- */
+/* ---------- qa rail (Agent reply cards) ---------- */
 
 .qa-rail { display: none; }
 .layout.with-qa .qa-rail { display: block; position: absolute; left: 0; top: 0; bottom: 0; width: 320px; z-index: 5; }
@@ -801,7 +820,7 @@ body {
 .qa-pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: qaPulse 1.2s ease-in-out infinite; }
 @keyframes qaPulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 
-/* 选中提问的原文：橙色高亮 */
+/* Quoted selection highlight (orange). */
 .content mark.mdp-qa-hl {
 	background: rgba(232, 137, 17, 0.35);
 	color: inherit;
@@ -811,7 +830,7 @@ body {
 }
 :root[data-theme="dark"] .content mark.mdp-qa-hl { background: rgba(232, 137, 17, 0.42); }
 
-/* 选中提问交互：浮动按钮 + 提问面板 */
+/* Selection Q&A interaction: floating button + ask panel. */
 .qa-sel-btn {
 	position: absolute;
 	z-index: 90;
@@ -921,17 +940,24 @@ body {
 `;
 
 /**
- * 导出文件的离线运行时：导出时作为独立 <script> 注入克隆，接管主题/背景/字号/行距、
- * 代码复制与回到顶部，使导出件看起来与导出瞬间的预览页一致。
+ * Offline runtime of the exported file: injected as a standalone <script> into
+ * the clone at export time. It takes over theme/background/font-size/line-height,
+ * code copy and back-to-top so the export looks like the preview at export time.
  *
- * 硬约束（见 docs/web-export-plan.md §5 R1/R8）：内部不写反引号、不写 ${}、不写正则转义，
- * 也绝不出现 `</script>` 序列；在 PAGE_JS 里经 JSON.stringify + \u003c 替换注入。
- * 刻意不写 localStorage、不发任何网络请求——离线打开导出件不得污染在线预览的用户偏好。
+ * Hard constraints (see docs/web-export-plan.md §5 R1/R8): no backticks, no ${},
+ * no regex escapes and never a `</script>` sequence in the body; PAGE_JS injects
+ * it through JSON.stringify + \u003c replacement. Deliberately no localStorage
+ * and no network requests — opening the export offline must not touch the online
+ * preview's user prefs.
  */
 const EXPORT_JS = `
 (function () {
 	"use strict";
 	var root = document.documentElement;
+	// Frozen UI copy of the export, written by buildExportDocument as a data
+	// attribute so the snapshot never needs the online i18n bundle at runtime.
+	var T = {};
+	try { T = JSON.parse(root.getAttribute("data-export-i18n") || "{}"); } catch (e) { T = {}; }
 	var toastEl = document.getElementById("toast");
 	var toastTimer = null;
 	function toast(msg) {
@@ -942,19 +968,20 @@ const EXPORT_JS = `
 		toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 1800);
 	}
 
-	/* ---------- 离线快照徽标 ----------
-	   静态 HTML 在导出时已写入「离线导出 · 时间」（无 JS 也正确）；
-	   这里按冻结的导出时间再写一次，作为导出件身份标识并可修正 locale 差异。 */
+	/* ---------- offline snapshot badge ----------
+	   The static HTML already carries the badge written at export time (correct
+	   without JS); rewrite it here from the frozen timestamp so it stays the
+	   export's identity marker and follows the frozen locale. */
 
 	function snapshotTime() {
 		var at = parseInt(root.getAttribute("data-exported-at") || "", 10);
 		var t = new Date(isFinite(at) && at > 0 ? at : Date.now());
-		try { return t.toLocaleString("zh-CN", { hour12: false }); } catch (e) { return t.toString(); }
+		try { return t.toLocaleString(T.locale, { hour12: false }); } catch (e) { return t.toString(); }
 	}
 	var pillText = document.querySelector("#livePill .live-text");
-	if (pillText) pillText.textContent = "离线导出 · " + snapshotTime();
+	if (pillText) pillText.textContent = (T.exportBadge || "") + snapshotTime();
 
-	/* ---------- 主题 / 阅读背景：只改 DOM 与 CSS 变量 ---------- */
+	/* ---------- theme / reading background: only touch the DOM and CSS variables ---------- */
 
 	function markActive(attr, value) {
 		var btns = document.querySelectorAll("[" + attr + "]");
@@ -972,8 +999,9 @@ const EXPORT_JS = `
 		root.setAttribute("data-theme-pref", pref);
 		root.setAttribute("data-theme", resolveTheme(pref));
 		markActive("data-theme-set", pref);
-		// 导出件不含 mermaid 运行时：切主题后 SVG 配色保持快照时刻（已知限制）
-		if (document.querySelector(".mermaid-rendered svg")) toast("图表配色保持导出时的主题");
+		// The export has no mermaid runtime: after a theme switch the SVG colors
+		// stay at the snapshot theme (known limitation).
+		if (document.querySelector(".mermaid-rendered svg")) toast(T.exportMermaidThemeToast);
 	}
 	function applyBg(pref) {
 		root.setAttribute("data-bg", pref);
@@ -989,11 +1017,12 @@ const EXPORT_JS = `
 			t = t.parentNode;
 		}
 	});
-	// 冻结值同步按钮态：导出件打开时高亮当前主题/背景（导出时已固化为具体亮/暗值）
+	// Sync frozen values into button state: highlight the current theme/background when
+	// the export opens (both were frozen to concrete light/dark values at export time).
 	markActive("data-theme-set", root.getAttribute("data-theme-pref") || "system");
 	markActive("data-bg-set", root.getAttribute("data-bg") || "white");
 
-	/* ---------- 字号 / 行距（钳制语义与在线版一致） ---------- */
+	/* ---------- font size / line height (clamping semantics match the online version) ---------- */
 
 	var scale = parseFloat(root.style.getPropertyValue("--font-scale") || "");
 	if (!isFinite(scale) || scale <= 0) scale = 1;
@@ -1021,17 +1050,17 @@ const EXPORT_JS = `
 	if (fontValue) {
 		fontValue.addEventListener("click", function () { setScale(1); });
 		fontValue.style.cursor = "pointer";
-		fontValue.title = "点击恢复默认";
+		fontValue.title = T.resetDefault;
 	}
 	if (lineMinus) lineMinus.addEventListener("click", function () { setLineHeight(lineHeight - LINE_STEP); });
 	if (linePlus) linePlus.addEventListener("click", function () { setLineHeight(lineHeight + LINE_STEP); });
 	if (lineHeightValue) {
 		lineHeightValue.addEventListener("click", function () { setLineHeight(LINE_DEFAULT); });
 		lineHeightValue.style.cursor = "pointer";
-		lineHeightValue.title = "点击恢复默认";
+		lineHeightValue.title = T.resetDefault;
 	}
 
-	/* ---------- 代码复制（file:// 下 clipboard API 可能被拒 → execCommand 兜底） ---------- */
+	/* ---------- code copy (file:// may reject the clipboard API; execCommand fallback) ---------- */
 
 	function legacyCopy(text) {
 		var ta = document.createElement("textarea");
@@ -1054,12 +1083,12 @@ const EXPORT_JS = `
 		if (!pre) return;
 		var text = pre.innerText;
 		var done = function () {
-			btn.textContent = "已复制";
+			btn.textContent = T.copyDone;
 			btn.classList.add("done");
-			toast("代码已复制到剪贴板");
-			setTimeout(function () { btn.textContent = "复制"; btn.classList.remove("done"); }, 1600);
+			toast(T.copyToast);
+			setTimeout(function () { btn.textContent = T.copyBtn; btn.classList.remove("done"); }, 1600);
 		};
-		var failed = function () { toast("复制失败"); };
+		var failed = function () { toast(T.copyFailToast); };
 		if (navigator.clipboard && navigator.clipboard.writeText) {
 			navigator.clipboard.writeText(text).then(done, function () {
 				if (legacyCopy(text)) done(); else failed();
@@ -1073,7 +1102,7 @@ const EXPORT_JS = `
 	var copyBtns = document.querySelectorAll(".copy-btn");
 	for (var ci = 0; ci < copyBtns.length; ci++) copyBtns[ci].addEventListener("click", onCopy);
 
-	/* ---------- 回到顶部 + 吸顶阴影（不做 scroll-spy，静态快照语义） ---------- */
+	/* ---------- back to top + sticky shadow (no scroll-spy; static snapshot semantics) ---------- */
 
 	var toTop = document.getElementById("toTop");
 	var topbar = document.getElementById("topbar");
@@ -1095,6 +1124,82 @@ const PAGE_JS = `
 	var root = document.documentElement;
 	var motionOK = !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 
+	/* ---------- i18n: UI language + localized strings ---------- */
+
+	// Full bilingual bundle injected by the server; the effective language comes
+	// from THEME_BOOT (localStorage > server hint) so an in-page choice survives.
+	var BUNDLE = DOC.i18n || {};
+	var lang = root.dataset.mdpLang || DOC.lang || "en";
+	if (lang !== "en" && lang !== "zh") lang = "en";
+	var T = BUNDLE[lang] || BUNDLE.en || {};
+	var liveState = "live";   // remembered so the live pill can be retranslated
+
+	// Re-render every static localized element that carries a data-i18n* anchor.
+	function applyStaticStrings() {
+		var els = document.querySelectorAll("[data-i18n]");
+		for (var i = 0; i < els.length; i++) els[i].textContent = T[els[i].getAttribute("data-i18n")] || "";
+		var attrs = [["data-i18n-title", "title"], ["data-i18n-aria", "aria-label"], ["data-i18n-placeholder", "placeholder"]];
+		for (var a = 0; a < attrs.length; a++) {
+			var list = document.querySelectorAll("[" + attrs[a][0] + "]");
+			for (var j = 0; j < list.length; j++) {
+				var k = list[j].getAttribute(attrs[a][0]);
+				list[j].setAttribute(attrs[a][1], T[k] || "");
+			}
+		}
+	}
+
+	function markLangActive() {
+		var btns = document.querySelectorAll("[data-lang-set]");
+		for (var i = 0; i < btns.length; i++) {
+			var on = btns[i].getAttribute("data-lang-set") === lang;
+			btns[i].classList.toggle("active", on);
+			btns[i].setAttribute("aria-pressed", on ? "true" : "false");
+		}
+	}
+
+	// Switch the whole page to the requested language: static chrome, dynamic
+	// chrome, QA cards, <html lang> and the document-title suffix.
+	function applyLang(next) {
+		if (next !== "en" && next !== "zh") return;
+		lang = next;
+		T = BUNDLE[lang] || BUNDLE.en || {};
+		root.dataset.mdpLang = lang;
+		root.setAttribute("lang", T.htmlLang || (lang === "zh" ? "zh-CN" : "en"));
+		applyStaticStrings();
+		setLive(liveState);
+		fontValue.title = T.resetDefault;
+		lineHeightValue.title = T.resetDefault;
+		var copyBtns = document.querySelectorAll(".copy-btn");
+		for (var i = 0; i < copyBtns.length; i++) {
+			copyBtns[i].textContent = copyBtns[i].classList.contains("done") ? T.copyDone : T.copyBtn;
+		}
+		for (var id in qaState) {
+			if (Object.prototype.hasOwnProperty.call(qaState, id)) {
+				var card = qaRail.querySelector('.qa-card[data-qa="' + id + '"]');
+				if (card) card.innerHTML = cardInnerHtml(qaState[id]);
+			}
+		}
+		layoutQaCards();
+		markLangActive();
+		var titleEl = document.getElementById("docTitle");
+		if (titleEl) document.title = titleEl.textContent + " \\u00b7 " + (T.titleSuffix || "Markdown Preview");
+	}
+
+	// In-page language switch. The choice is remembered in localStorage (mdp.lang)
+	// and, per contract, wins over the language pushed by the server over SSE.
+	document.addEventListener("click", function (e) {
+		var t = e.target;
+		while (t && t !== document) {
+			if (t.getAttribute && t.getAttribute("data-lang-set")) {
+				var v = t.getAttribute("data-lang-set");
+				try { localStorage.setItem("mdp.lang", v); } catch (err) {}
+				applyLang(v);
+				return;
+			}
+			t = t.parentNode;
+		}
+	});
+
 	/* ---------- user-level prefs (server-side, cross-session) ---------- */
 
 	var prefsUrl = DOC.prefsUrl || "";
@@ -1111,7 +1216,7 @@ const PAGE_JS = `
 			} else if (navigator.sendBeacon) {
 				navigator.sendBeacon(prefsUrl, new Blob([body], { type: "application/json" }));
 			}
-		} catch (e) { /* 偏好持久化是尽力而为，不阻塞交互 */ }
+		} catch (e) { /* prefs persistence is best-effort and must not block interaction */ }
 	}
 	function savePrefs(patch) {
 		if (!prefsUrl) return;
@@ -1146,7 +1251,7 @@ const PAGE_JS = `
 			btns[i].classList.toggle("active", on);
 			btns[i].setAttribute("aria-pressed", on ? "true" : "false");
 		}
-		// 主题切换后按新主题重渲染已渲染的 mermaid 图表（见 mermaid 图表小节）
+		// Re-render already rendered mermaid diagrams for the new theme (see the mermaid section).
 		rerenderMermaidForTheme();
 	}
 	document.addEventListener("click", function (e) {
@@ -1167,7 +1272,7 @@ const PAGE_JS = `
 	}
 	applyTheme(themePref, false);
 
-	/* ---------- 阅读背景 ---------- */
+	/* ---------- reading background ---------- */
 
 	var bgPref = root.dataset.bg || "white";
 	function applyBg(pref, persist) {
@@ -1213,9 +1318,10 @@ const PAGE_JS = `
 	document.getElementById("fontPlus").addEventListener("click", function () { setScale(scale + 0.1); });
 	fontValue.addEventListener("click", function () { setScale(1); });
 	fontValue.style.cursor = "pointer";
-	fontValue.title = "点击恢复默认";
-	// 初始 setScale 延后到 boot 阶段调用：此时「选中提问」区块的 qaRail 等变量已就绪，
-	// 否则 setScale → layoutQaCards 会在 qaRail 赋值前执行（依赖 layoutQaCards 自身守卫兜底）。
+	fontValue.title = T.resetDefault;
+	// The initial setScale call is deferred to the boot phase, where the Q&A
+	// section's variables (qaRail etc.) are already assigned; otherwise
+	// setScale -> layoutQaCards would run before qaRail exists (it has its own guard).
 
 	/* ---------- line height ---------- */
 
@@ -1223,7 +1329,7 @@ const PAGE_JS = `
 	var lineHeightValue = document.getElementById("lineHeightValue");
 	var lineHeight = parseFloat(root.style.getPropertyValue("--line-height") || String(LINE_DEFAULT));
 	if (!isFinite(lineHeight) || lineHeight <= 0) lineHeight = LINE_DEFAULT;
-	// setLineHeight 自包含（不依赖 layoutQaCards 等外部函数），boot 前调用也安全。
+	// setLineHeight is self-contained (no dependency on layoutQaCards), so calling it before boot is safe.
 	function setLineHeight(v) {
 		lineHeight = Math.min(LINE_MAX, Math.max(LINE_MIN, Math.round(v * 100) / 100));
 		root.style.setProperty("--line-height", String(lineHeight));
@@ -1235,7 +1341,7 @@ const PAGE_JS = `
 	document.getElementById("lineHeightPlus").addEventListener("click", function () { setLineHeight(lineHeight + LINE_STEP); });
 	lineHeightValue.addEventListener("click", function () { setLineHeight(LINE_DEFAULT); });
 	lineHeightValue.style.cursor = "pointer";
-	lineHeightValue.title = "点击恢复默认";
+	lineHeightValue.title = T.resetDefault;
 
 	/* ---------- toast ---------- */
 
@@ -1438,7 +1544,7 @@ const PAGE_JS = `
 				var btn = document.createElement("button");
 				btn.type = "button";
 				btn.className = "copy-btn";
-				btn.textContent = "复制";
+				btn.textContent = T.copyBtn;
 				btn.addEventListener("click", onCopy);
 				head.appendChild(btn);
 			}
@@ -1452,7 +1558,7 @@ const PAGE_JS = `
 		for (var j = 0; j < bare.length; j++) {
 			var pre = bare[j];
 			if (pre.closest && pre.closest(".code-block")) continue;
-			// mermaid 图表块保持裸 pre（pre.mermaid 及 .mermaid 内部），由 renderMermaidBlocks 负责，不包 code-block
+			// Keep mermaid blocks as bare pre (pre.mermaid and .mermaid children); renderMermaidBlocks owns them, so skip the code-block wrapper.
 			if (pre.classList.contains("mermaid") || (pre.closest && pre.closest(".mermaid"))) continue;
 			var wrap = document.createElement("div");
 			wrap.className = "code-block";
@@ -1473,30 +1579,30 @@ const PAGE_JS = `
 		if (!pre) return;
 		var text = pre.innerText;
 		var done = function () {
-			btn.textContent = "已复制";
+			btn.textContent = T.copyDone;
 			btn.classList.add("done");
-			toast("代码已复制到剪贴板");
-			setTimeout(function () { btn.textContent = "复制"; btn.classList.remove("done"); }, 1600);
+			toast(T.copyToast);
+			setTimeout(function () { btn.textContent = T.copyBtn; btn.classList.remove("done"); }, 1600);
 		};
 		if (navigator.clipboard && navigator.clipboard.writeText) {
-			navigator.clipboard.writeText(text).then(done, function () { toast("复制失败"); });
+			navigator.clipboard.writeText(text).then(done, function () { toast(T.copyFailToast); });
 		} else {
 			var ta = document.createElement("textarea");
 			ta.value = text;
 			document.body.appendChild(ta);
 			ta.select();
-			try { document.execCommand("copy"); done(); } catch (err) { toast("复制失败"); }
+			try { document.execCommand("copy"); done(); } catch (err) { toast(T.copyFailToast); }
 			document.body.removeChild(ta);
 		}
 	}
 
-	/* ---------- mermaid 图表（懒加载同源 /mermaid.mjs，完全离线） ---------- */
+	/* ---------- mermaid diagrams (lazy-load same-origin /mermaid.mjs, fully offline) ---------- */
 
 	var mermaidPromise = null;
-	var mermaidSeq = 0;      // mermaid.render 要求 id 每次唯一
-	var mermaidTheme = "";   // 已 initialize 的主题；主题切换时先 initialize 再渲染
+	var mermaidSeq = 0;      // mermaid.render requires a unique id on every call
+	var mermaidTheme = "";   // theme already passed to initialize(); re-initialize before rendering after a switch
 
-	// 只有文档里存在 pre.mermaid 时才会调用；加载失败清空缓存以便下次重试
+	// Called only when the document contains pre.mermaid; a failed load clears the cache so the next call retries.
 	function loadMermaid() {
 		if (!mermaidPromise) {
 			mermaidPromise = import("/mermaid.mjs").catch(function (e) {
@@ -1507,14 +1613,15 @@ const PAGE_JS = `
 		return mermaidPromise;
 	}
 
-	// 渲染单个块：成功后用相邻 div.mermaid-rendered 承载 svg，pre 藏起留作源码备份；
-	// 失败保留转义源码可见（pre 本身就是转义源码），绝不向外抛错。
+	// Render one block: on success an adjacent div.mermaid-rendered carries the svg and
+	// the pre is hidden as a source backup; on failure the escaped source stays visible.
+	// Never throws outwards.
 	function renderMermaidOne(mermaid, pre) {
 		try {
 			var id = "mmd-" + (++mermaidSeq);
 			mermaid.render(id, pre.textContent).then(function (r) {
 				var svg = r && r.svg ? r.svg : "";
-				// pre 可能已被 SSE 更新整体替换，此时不能再插入 DOM
+				// The pre may have been replaced by an SSE update; do not insert into the DOM then.
 				if (!svg || !pre.parentNode) throw new Error("mermaid empty svg");
 				var box = document.createElement("div");
 				box.className = "mermaid-rendered";
@@ -1527,34 +1634,34 @@ const PAGE_JS = `
 				try {
 					pre.style.display = "";
 					pre.setAttribute("data-status", "error");
-				} catch (err) { /* 节点可能已被替换，忽略 */ }
-				console.warn("[md-preview] mermaid 渲染失败：", e);
+				} catch (err) { /* the node may have been replaced; ignore */ }
+				console.warn("[md-preview] mermaid render failed:", e);
 			});
 		} catch (e) {
 			try { pre.setAttribute("data-status", "error"); } catch (err) { /* ignore */ }
-			console.warn("[md-preview] mermaid 渲染失败：", e);
+			console.warn("[md-preview] mermaid render failed:", e);
 		}
 	}
 
-	// 渲染 scope 内未处理（无 data-mmd 标记）的 pre.mermaid
+	// Render pre.mermaid nodes inside scope that are still unprocessed (no data-mmd marker).
 	function renderMermaidBlocks(scope) {
 		var list = [];
 		try {
 			var nodes = (scope || document).querySelectorAll("pre.mermaid");
 			for (var i = 0; i < nodes.length; i++) {
 				if (nodes[i].getAttribute("data-mmd")) continue;
-				nodes[i].setAttribute("data-mmd", "pending");   // 防止并发调用重复渲染
+				nodes[i].setAttribute("data-mmd", "pending");   // guard against duplicate rendering from concurrent calls
 				nodes[i].setAttribute("data-status", "loading");
 				list.push(nodes[i]);
 			}
 		} catch (e) {
-			console.warn("[md-preview] mermaid 扫描失败：", e);
+			console.warn("[md-preview] mermaid scan failed:", e);
 			return;
 		}
 		if (!list.length) return;
 		loadMermaid().then(function (mod) {
 			var mermaid = (mod && mod.default) || mod;
-			// 全局只 initialize 一次主题；主题切换后重新 initialize 再渲染
+			// initialize the theme once; re-initialize before rendering after a theme switch
 			var theme = root.dataset.theme === "dark" ? "dark" : "default";
 			if (mermaidTheme !== theme) {
 				mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: theme });
@@ -1562,18 +1669,18 @@ const PAGE_JS = `
 			}
 			for (var i = 0; i < list.length; i++) renderMermaidOne(mermaid, list[i]);
 		}).catch(function (e) {
-			// mermaid 加载/初始化失败：全部回退为源码可见
+			// mermaid failed to load/initialize: fall back to source view for every block
 			for (var i = 0; i < list.length; i++) {
 				try {
 					list[i].style.display = "";
 					list[i].setAttribute("data-status", "error");
 				} catch (err) { /* ignore */ }
 			}
-			console.warn("[md-preview] mermaid 加载失败：", e);
+			console.warn("[md-preview] mermaid load failed:", e);
 		});
 	}
 
-	// 主题切换后重渲染：删掉旧 div.mermaid-rendered、恢复 pre 显示，再按新主题渲染
+	// Re-render after a theme switch: drop old div.mermaid-rendered nodes, show the pre again, render for the new theme.
 	function rerenderMermaidForTheme() {
 		try {
 			var done = document.querySelectorAll('pre.mermaid[data-mmd="done"]');
@@ -1590,7 +1697,7 @@ const PAGE_JS = `
 			}
 			renderMermaidBlocks(document);
 		} catch (e) {
-			console.warn("[md-preview] mermaid 主题重渲染失败：", e);
+			console.warn("[md-preview] mermaid theme re-render failed:", e);
 		}
 	}
 
@@ -1598,22 +1705,30 @@ const PAGE_JS = `
 
 	var livePill = document.getElementById("livePill");
 	function setLive(state) {
+		liveState = state;
 		if (state === "live") {
 			livePill.classList.remove("down");
-			livePill.title = "文件修改后页面会自动更新";
-			livePill.querySelector(".live-text").textContent = "实时同步";
+			livePill.title = T.liveSyncTitle;
+			livePill.querySelector(".live-text").textContent = T.liveSyncText;
 		} else {
 			livePill.classList.add("down");
-			livePill.title = "与预览服务的连接已断开";
-			livePill.querySelector(".live-text").textContent = "连接断开";
+			livePill.title = T.liveDownTitle;
+			livePill.querySelector(".live-text").textContent = T.liveDownText;
 		}
 	}
 
 	function applyUpdate(d, quiet) {
+		// The server may switch the UI language; a local choice (localStorage) still wins.
+		if (d.lang === "en" || d.lang === "zh") {
+			DOC.lang = d.lang;
+			var chosen = null;
+			try { chosen = localStorage.getItem("mdp.lang"); } catch (err) {}
+			if (chosen !== "en" && chosen !== "zh") applyLang(d.lang);
+		}
 		var content = document.getElementById("content");
 		content.innerHTML = d.html;
 		if (d.title) {
-			document.title = d.title + " \\u00b7 Markdown Preview";
+			document.title = d.title + " \\u00b7 " + (T.titleSuffix || "Markdown Preview");
 			document.getElementById("docTitle").textContent = d.title;
 		}
 		buildToc(d.toc || []);
@@ -1621,7 +1736,7 @@ const PAGE_JS = `
 		renderMermaidBlocks(content);
 		restoreQaHighlights();
 		onScroll();
-		if (!quiet) toast("文档已更新");
+		if (!quiet) toast(T.docUpdatedToast);
 	}
 
 	if (DOC.updateUrl && window.EventSource) {
@@ -1636,12 +1751,12 @@ const PAGE_JS = `
 		});
 		es.addEventListener("closing", function () {
 			setLive("down");
-			toast("预览服务已退出");
+			toast(T.serverExitToast);
 		});
 		es.addEventListener("ask", function (e) {
 			try {
 				var qa = JSON.parse(e.data);
-				// 本标签页刚提交的提问优先用提交时存活的选区做精确高亮（支持跨元素）
+				// A question submitted by this tab is highlighted precisely with the still-live selection Range (supports spanning elements).
 				if (pendingSubmit && qa.quote === pendingSubmit.quote && qa.question === pendingSubmit.question) {
 					addQa(qa, pendingSubmit.range);
 					pendingSubmit = null;
@@ -1658,7 +1773,7 @@ const PAGE_JS = `
 				entry.answerHtml = d.answerHtml;
 				entry.answeredAt = d.answeredAt;
 				refreshCard(d.id);
-				toast("Agent 已回复");
+				toast(T.qaAnsweredToast);
 			} catch (err) { /* ignore malformed frames */ }
 		});
 	}
@@ -1669,7 +1784,7 @@ const PAGE_JS = `
 		});
 	}
 
-	/* ---------- 选中提问（Q&A with the agent） ---------- */
+	/* ---------- ask about the selection (Q&A with the agent) ---------- */
 
 	var askUrl = DOC.askUrl || "";
 	var layoutEl = document.getElementById("layout");
@@ -1683,10 +1798,10 @@ const PAGE_JS = `
 		return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 	}
 	function fmtTime(t) {
-		try { return new Date(t).toLocaleString("zh-CN", { hour12: false }); } catch (e) { return ""; }
+		try { return new Date(t).toLocaleString(T.locale, { hour12: false }); } catch (e) { return ""; }
 	}
 
-	// 用仍然存活的 Range 精确包裹选区（支持跨元素选择）。
+	// Wrap the still-live Range precisely (supports selections that span elements).
 	function highlightRange(id, range) {
 		if (!range || range.collapsed || !range.startContainer) return false;
 		if (!contentEl.contains(range.commonAncestorContainer)) return false;
@@ -1708,13 +1823,13 @@ const PAGE_JS = `
 			frag = null;
 			return true;
 		} catch (err) {
-			try { if (frag && frag.childNodes.length) range.insertNode(frag); } catch (e2) { /* 尽力恢复原内容 */ }
+			try { if (frag && frag.childNodes.length) range.insertNode(frag); } catch (e2) { /* best-effort restore of the original content */ }
 			return false;
 		}
 	}
 
-	// 恢复场景（刷新 / 重渲染 / 其他标签页）：按文本在正文里定位并包裹。
-	// 仅处理落在单个文本节点内的原文；跨节点原文在恢复时不高亮（卡片仍显示）。
+	// Restore cases (reload / re-render / other tabs): locate the quote in the body and wrap it.
+	// Only quotes inside a single text node are highlighted on restore (the card still shows).
 	function highlightByText(id, quote) {
 		if (!quote) return false;
 		if (contentEl.querySelector('mark[data-qa="' + id + '"]')) return true;
@@ -1746,12 +1861,12 @@ const PAGE_JS = `
 	function cardInnerHtml(entry) {
 		var answered = !!entry.answerHtml;
 		var time = answered && entry.answeredAt ? fmtTime(entry.answeredAt) : "";
-		return '<div class="qa-head"><span class="qa-badge">Agent 回复</span><span class="qa-time">' + esc(time) + "</span></div>"
-			+ '<div class="qa-quote"><span class="qa-label">原文</span>' + esc(entry.quote) + "</div>"
-			+ '<div class="qa-q"><span class="qa-label">问</span>' + esc(entry.question) + "</div>"
+		return '<div class="qa-head"><span class="qa-badge">' + esc(T.qaBadge) + '</span><span class="qa-time">' + esc(time) + "</span></div>"
+			+ '<div class="qa-quote"><span class="qa-label">' + esc(T.qaLabelQuote) + "</span>" + esc(entry.quote) + "</div>"
+			+ '<div class="qa-q"><span class="qa-label">' + esc(T.qaLabelQuestion) + "</span>" + esc(entry.question) + "</div>"
 			+ (answered
 				? '<div class="qa-a">' + entry.answerHtml + "</div>"
-				: '<div class="qa-wait"><span class="qa-pulse"></span>等待 Agent 回复…</div>');
+				: '<div class="qa-wait"><span class="qa-pulse"></span>' + esc(T.qaWaiting) + "</div>");
 	}
 
 	function buildCard(id, entry) {
@@ -1775,23 +1890,27 @@ const PAGE_JS = `
 	function anchorY(id) {
 		var m = contentEl.querySelector('mark[data-qa="' + id + '"]');
 		if (!m) return 0;
-		// rect 差值在同一帧内测量，页面滚动在差值中抵消，无需补偿 scrollY
+		// Both rects are measured in the same frame, so page scroll cancels out in the delta;
+		// no scrollY compensation is needed.
 		var mr = m.getBoundingClientRect();
 		return mr.top - qaRail.getBoundingClientRect().top;
 	}
 
 	function layoutQaCards() {
-		// 守卫：本函数可能在「选中提问」区块的 qaRail/contentEl 赋值前被调用
-		//（如 setScale 在字号初始化阶段调用），此时直接返回，避免 TypeError 打断整个 IIFE。
+		// Guard: this function may run before the Q&A section assigns qaRail/contentEl
+		// (e.g. setScale during font-size init); bail out instead of throwing a TypeError
+		// that would abort the whole IIFE.
 		if (!qaRail || !contentEl) return;
-		// rail 右缘停在正文左侧 16px 处，卡片向左伸展利用视口左侧空白（上限 560px）；
-		// 窄窗口保持 ≥280px 宽，宁可向右覆盖正文左缘，也不越出视口左缘 12px。窗口 resize 时随本函数重算。
+		// The rail's right edge stops 16px left of the article; cards stretch left into the
+		// empty viewport area (capped at 560px). In narrow windows the rail stays at least
+		// 280px wide: covering the article's left edge beats leaving the viewport.
+		// Recalculated by this function on resize.
 		var layoutRect = layoutEl.getBoundingClientRect();
 		var contentRect = contentEl.getBoundingClientRect();
-		var railRight = contentRect.left - 16;                 // rail 右缘的视口 x 坐标（正文左侧留 16px 间隙）
+		var railRight = contentRect.left - 16;                 // viewport x of the rail's right edge (16px gap to the article)
 		var width = Math.round(Math.min(Math.max(railRight, 280), 560));
-		var left = railRight - width - layoutRect.left;        // 换算成相对 layout 左边框的偏移
-		left = Math.max(left, 12 - layoutRect.left);           // 不越出视口左缘 12px
+		var left = railRight - width - layoutRect.left;        // convert to an offset from the layout's left border
+		left = Math.max(left, 12 - layoutRect.left);           // never leave the viewport's left edge by less than 12px
 		qaRail.style.width = width + "px";
 		qaRail.style.left = left + "px";
 		qaStackTop = 0;
@@ -1823,7 +1942,7 @@ const PAGE_JS = `
 	}
 	window.addEventListener("resize", layoutQaCards);
 
-	/* 选区交互：浮动「提问」按钮 + 提问面板 */
+	/* selection interaction: floating ask button + ask panel */
 	var selBtn = document.getElementById("qaSelBtn");
 	var askPanel = document.getElementById("askPanel");
 	var panelQuote = document.getElementById("qaPanelQuote");
@@ -1877,7 +1996,7 @@ const PAGE_JS = `
 		function submitAsk() {
 			var q = panelInput.value.trim();
 			if (!q || !pendingQuote) return;
-			// 与服务端落库时的 trim 保持一致，SSE 回来时才能匹配上 pendingSubmit
+			// Match the server-side trim so the SSE echo can be matched to pendingSubmit.
 			var quote = pendingQuote.trim();
 			var range = pendingRange;
 			pendingSubmit = { quote: quote, question: q, range: range };
@@ -1893,17 +2012,17 @@ const PAGE_JS = `
 				askPanel.hidden = true;
 				pendingSubmit = null;
 				if (!qaState[data.id]) addQa({ id: data.id, quote: quote, question: q, answerHtml: null, askedAt: data.askedAt || Date.now(), answeredAt: null }, range);
-				toast("已提问，等待 Agent 回复…");
+				toast(T.qaAskToast);
 			}).catch(function () {
 				pendingSubmit = null;
-				toast("提问发送失败，请重试");
+				toast(T.qaAskFailToast);
 			}).then(function () {
 				panelInput.disabled = false;
 			});
 		}
 	}
 
-	/* ---------- 导出 HTML（离线快照：克隆 → 净化 → 冻结 → 内联图片 → 下载） ---------- */
+	/* ---------- export HTML (offline snapshot: clone -> sanitize -> freeze -> inline images -> download) ---------- */
 
 	var EXPORT_RUNTIME = ${JSON.stringify(EXPORT_JS).replace(/</g, "\\u003c")};
 
@@ -1914,7 +2033,8 @@ const PAGE_JS = `
 		}
 	}
 
-	// R7：顶栏副标题是源文件绝对路径（server 传 doc.filePath），分享导出件前只留文件名
+	// R7: the topbar subtitle is the absolute source path (the server passes doc.filePath);
+	// keep only the file name before sharing the export.
 	function baseName(p) {
 		var normalized = String(p || "").split(String.fromCharCode(92)).join("/");
 		var parts = normalized.split("/");
@@ -1922,7 +2042,8 @@ const PAGE_JS = `
 		return parts.length ? parts[parts.length - 1] : normalized;
 	}
 
-	// 文件名净化：逐字符过滤（不在模板字符串里写正则），非法字符折叠为单个「-」
+	// File-name sanitization: filter character by character (no regex inside the template string);
+	// illegal characters collapse to a single "-".
 	function exportFileName() {
 		var titleEl = document.getElementById("docTitle");
 		var raw = titleEl ? String(titleEl.textContent || "") : "";
@@ -1949,7 +2070,8 @@ const PAGE_JS = `
 		return "md-preview-" + out + "-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + pad(d.getHours()) + pad(d.getMinutes()) + ".html";
 	}
 
-	// mermaid 可能仍在动态 import + render：最多等 3s，超时照常导出（源码可见）并返回超时标记
+	// mermaid may still be importing + rendering: wait up to 3s, then export anyway
+	// (source visible) and report the timeout flag.
 	function waitForMermaid() {
 		return new Promise(function (resolve) {
 			var deadline = Date.now() + 3000;
@@ -1977,7 +2099,8 @@ const PAGE_JS = `
 		});
 	}
 
-	// 同源 /asset/<token> 图片内联为 data URL；data:/http(s): 跳过；失败保留原 src，不阻塞导出
+	// Inline same-origin /asset/<token> images as data URLs; skip data:/http(s):;
+	// on failure keep the original src and do not block the export.
 	function inlineImages(clone) {
 		var imgs = clone.querySelectorAll("img[src]");
 		var jobs = [];
@@ -1987,7 +2110,7 @@ const PAGE_JS = `
 			(function (el, s) {
 				jobs.push(imageToDataUrl(s).then(function (dataUrl) {
 					if (dataUrl) el.setAttribute("src", dataUrl);
-				}, function () { /* 内联失败：保留原 src，离线可能不显示 */ }));
+				}, function () { /* inline failed: keep the original src (may not display offline) */ }));
 			})(imgs[i], src);
 		}
 		return Promise.all(jobs);
@@ -1996,7 +2119,7 @@ const PAGE_JS = `
 	function buildExportDocument() {
 		var clone = document.documentElement.cloneNode(true);
 
-		/* 1) 冻结外观状态为具体值（导出件不再跟随系统/偏好漂移） */
+		/* 1) Freeze the appearance into concrete values (the export no longer follows system/prefs drift) */
 		var theme = root.dataset.theme === "dark" ? "dark" : "light";
 		clone.setAttribute("data-theme", theme);
 		clone.setAttribute("data-theme-pref", theme);
@@ -2006,25 +2129,27 @@ const PAGE_JS = `
 		clone.removeAttribute("data-pref-bg");
 		clone.style.setProperty("--font-scale", String(scale));
 		clone.style.setProperty("--line-height", String(lineHeight));
+		// Freeze the effective language (including an in-page switch) into the snapshot.
+		clone.setAttribute("data-export-i18n", JSON.stringify(T));
 
-		/* 2) 剥离脚本与在线交互（离线必然失败或语义错误的入口） */
+		/* 2) Strip scripts and online interactions (entries that would surely fail or be wrong offline) */
 		var scripts = clone.querySelectorAll("script");
 		for (var i = 0; i < scripts.length; i++) scripts[i].parentNode.removeChild(scripts[i]);
-		removeInClone(clone, ["exportBtn", "downloadBtn", "qaSelBtn", "askPanel"]);
+		removeInClone(clone, ["exportBtn", "downloadBtn", "qaSelBtn", "askPanel", "langSeg"]);
 		var prog = clone.querySelector(".progress");
 		if (prog && prog.parentNode) prog.parentNode.removeChild(prog);
 		var exportedAt = Date.now();
 		clone.setAttribute("data-exported-at", String(exportedAt));
 		var pill = clone.querySelector("#livePill");
 		if (pill) {
-			pill.innerHTML = '<span class="live-dot"></span><span class="live-text">离线导出 · ' + esc(fmtTime(exportedAt)) + "</span>";
+			pill.innerHTML = '<span class="live-dot"></span><span class="live-text">' + esc(T.exportBadge) + esc(fmtTime(exportedAt)) + "</span>";
 		}
 		var sub = clone.querySelector(".doc-sub");
 		if (sub) sub.textContent = baseName(sub.textContent);
 
-		/* 3) QA：已完成卡片原样保留；等待中 → 静态标注（保留虚线边框，去掉脉冲） */
+		/* 3) QA: keep answered cards as-is; turn waiting ones into a static note (dashed border kept, pulse removed) */
 		var waiting = clone.querySelectorAll(".qa-card.pending .qa-wait");
-		for (var j = 0; j < waiting.length; j++) waiting[j].textContent = "⏳ 导出时该提问尚未回复";
+		for (var j = 0; j < waiting.length; j++) waiting[j].textContent = T.qaPendingExport;
 		var rail = clone.querySelector("#qaRail");
 		if (rail && !rail.querySelector(".qa-card")) {
 			if (rail.parentNode) rail.parentNode.removeChild(rail);
@@ -2032,12 +2157,12 @@ const PAGE_JS = `
 			if (layoutClone) layoutClone.classList.remove("with-qa");
 		}
 
-		/* 4) 注入离线运行时（主题/背景/字号/行距/复制/回到顶部） */
+		/* 4) Inject the offline runtime (theme/background/font size/line height/copy/back-to-top) */
 		var runtime = document.createElement("script");
 		runtime.textContent = EXPORT_RUNTIME;
 		clone.querySelector("body").appendChild(runtime);
 
-		/* 5) 图片内联 + 等 mermaid 渲染收尾，然后序列化为单文件 HTML */
+		/* 5) Inline images + wait for mermaid to settle, then serialize into a single-file HTML */
 		return Promise.all([waitForMermaid(), inlineImages(clone)]).then(function (r) {
 			return { html: "<!doctype html>\\n" + clone.outerHTML, partial: !!r[0] };
 		});
@@ -2046,7 +2171,7 @@ const PAGE_JS = `
 	function exportHtml() {
 		var btn = document.getElementById("exportBtn");
 		if (btn) { btn.disabled = true; btn.classList.add("busy"); }
-		toast("正在生成导出文件…");
+		toast(T.exportPreparingToast);
 		buildExportDocument().then(function (res) {
 			var blob = new Blob([res.html], { type: "text/html;charset=utf-8" });
 			var url = URL.createObjectURL(blob);
@@ -2057,10 +2182,10 @@ const PAGE_JS = `
 			a.click();
 			document.body.removeChild(a);
 			setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
-			toast(res.partial ? "部分图表仍在渲染中，已导出源码" : "已导出 HTML");
+			toast(res.partial ? T.exportPartialToast : T.exportDoneToast);
 		}).catch(function (e) {
-			console.warn("[md-preview] 导出失败：", e);
-			toast("导出失败，请重试");
+			console.warn("[md-preview] export failed:", e);
+			toast(T.exportFailToast);
 		}).then(function () {
 			if (btn) { btn.disabled = false; btn.classList.remove("busy"); }
 		});
@@ -2071,6 +2196,7 @@ const PAGE_JS = `
 
 	/* ---------- boot ---------- */
 
+	applyLang(lang);
 	setScale(scale);
 	setLineHeight(lineHeight);
 	buildToc(DOC.toc || []);
@@ -2099,19 +2225,21 @@ function icon(name: string): string {
 
 export function renderPage(options: PageOptions): string {
 	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefLineHeight, prefBg, downloadUrl, prefsUrl, askUrl, qa, version } = options;
-	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, qa: qa ?? [], downloadUrl: downloadUrl ?? null }).replace(/</g, "\\u003c");
+	const lang = normalizeLang(options.lang);
+	const t = STRINGS[lang];
+	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, qa: qa ?? [], downloadUrl: downloadUrl ?? null, lang, i18n: STRINGS }).replace(/</g, "\\u003c");
 	const hintAttr = themeHint ? ` data-theme-hint="${escapeHtml(themeHint)}"` : "";
 	const scaleAttr = typeof prefScale === "number" && isFinite(prefScale) ? ` data-pref-scale="${prefScale}"` : "";
 	const lineHeightAttr = typeof prefLineHeight === "number" && isFinite(prefLineHeight) ? ` data-pref-line-height="${prefLineHeight}"` : "";
 	const bgAttr = prefBg ? ` data-pref-bg="${escapeHtml(prefBg)}"` : "";
 
 	return `<!doctype html>
-<html lang="zh-CN"${hintAttr}${scaleAttr}${lineHeightAttr}${bgAttr}>
+<html lang="${t.htmlLang}" data-lang-hint="${lang}"${hintAttr}${scaleAttr}${lineHeightAttr}${bgAttr}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>${escapeHtml(title)} &middot; Markdown Preview</title>
+<title>${escapeHtml(title)} &middot; ${escapeHtml(t.titleSuffix)}</title>
 ${THEME_BOOT}
 <style>${PAGE_CSS}</style>
 </head>
@@ -2128,38 +2256,42 @@ ${THEME_BOOT}
 			</div>
 		</div>
 		<div class="controls">
-			<span class="live-pill" id="livePill" title="实时同步"><span class="live-dot"></span><span class="live-text">实时同步</span></span>
-			<div class="seg" role="group" aria-label="主题">
-				<button type="button" data-theme-set="system" title="跟随系统" aria-label="跟随系统">${icon("system")}</button>
-				<button type="button" data-theme-set="light" title="浅色模式" aria-label="浅色模式">${icon("sun")}</button>
-				<button type="button" data-theme-set="dark" title="深色模式" aria-label="深色模式">${icon("moon")}</button>
+			<span class="live-pill" id="livePill" title="${escapeHtml(t.liveSyncTitle)}" data-i18n-title="liveSyncTitle"><span class="live-dot"></span><span class="live-text" data-i18n="liveSyncText">${escapeHtml(t.liveSyncText)}</span></span>
+			<div class="seg" role="group" aria-label="${escapeHtml(t.groupTheme)}" data-i18n-aria="groupTheme">
+				<button type="button" data-theme-set="system" title="${escapeHtml(t.themeSystem)}" aria-label="${escapeHtml(t.themeSystem)}" data-i18n-title="themeSystem" data-i18n-aria="themeSystem">${icon("system")}</button>
+				<button type="button" data-theme-set="light" title="${escapeHtml(t.themeLight)}" aria-label="${escapeHtml(t.themeLight)}" data-i18n-title="themeLight" data-i18n-aria="themeLight">${icon("sun")}</button>
+				<button type="button" data-theme-set="dark" title="${escapeHtml(t.themeDark)}" aria-label="${escapeHtml(t.themeDark)}" data-i18n-title="themeDark" data-i18n-aria="themeDark">${icon("moon")}</button>
 			</div>
-			<div class="seg" role="group" aria-label="阅读背景">
-				<button type="button" class="bg-swatch" data-bg-set="white" style="--dot:#ffffff" title="纯白" aria-label="纯白"></button>
-				<button type="button" class="bg-swatch" data-bg-set="dim" style="--dot:#f4f2ed" title="暗白" aria-label="暗白"></button>
-				<button type="button" class="bg-swatch" data-bg-set="wood" style="--dot:#f4ead8" title="木色" aria-label="木色"></button>
-				<button type="button" class="bg-swatch" data-bg-set="cyan" style="--dot:#e3edec" title="青色" aria-label="青色"></button>
+			<div class="seg" role="group" aria-label="${escapeHtml(t.groupBg)}" data-i18n-aria="groupBg">
+				<button type="button" class="bg-swatch" data-bg-set="white" style="--dot:#ffffff" title="${escapeHtml(t.bgWhite)}" aria-label="${escapeHtml(t.bgWhite)}" data-i18n-title="bgWhite" data-i18n-aria="bgWhite"></button>
+				<button type="button" class="bg-swatch" data-bg-set="dim" style="--dot:#f4f2ed" title="${escapeHtml(t.bgDim)}" aria-label="${escapeHtml(t.bgDim)}" data-i18n-title="bgDim" data-i18n-aria="bgDim"></button>
+				<button type="button" class="bg-swatch" data-bg-set="wood" style="--dot:#f4ead8" title="${escapeHtml(t.bgWood)}" aria-label="${escapeHtml(t.bgWood)}" data-i18n-title="bgWood" data-i18n-aria="bgWood"></button>
+				<button type="button" class="bg-swatch" data-bg-set="cyan" style="--dot:#e3edec" title="${escapeHtml(t.bgCyan)}" aria-label="${escapeHtml(t.bgCyan)}" data-i18n-title="bgCyan" data-i18n-aria="bgCyan"></button>
 			</div>
-			<div class="seg" role="group" aria-label="字号">
-				<button type="button" id="fontMinus" title="减小字号" aria-label="减小字号">A&minus;</button>
+			<div class="seg" role="group" aria-label="${escapeHtml(t.groupFont)}" data-i18n-aria="groupFont">
+				<button type="button" id="fontMinus" title="${escapeHtml(t.fontMinusLabel)}" aria-label="${escapeHtml(t.fontMinusLabel)}" data-i18n-title="fontMinusLabel" data-i18n-aria="fontMinusLabel">A&minus;</button>
 				<span id="fontValue">100%</span>
-				<button type="button" id="fontPlus" title="增大字号" aria-label="增大字号">A+</button>
+				<button type="button" id="fontPlus" title="${escapeHtml(t.fontPlusLabel)}" aria-label="${escapeHtml(t.fontPlusLabel)}" data-i18n-title="fontPlusLabel" data-i18n-aria="fontPlusLabel">A+</button>
 			</div>
-			<div class="seg" role="group" aria-label="行距">
-				<button type="button" id="lineHeightMinus" title="减小行距" aria-label="减小行距">&minus;</button>
+			<div class="seg" role="group" aria-label="${escapeHtml(t.groupLine)}" data-i18n-aria="groupLine">
+				<button type="button" id="lineHeightMinus" title="${escapeHtml(t.lineMinusLabel)}" aria-label="${escapeHtml(t.lineMinusLabel)}" data-i18n-title="lineMinusLabel" data-i18n-aria="lineMinusLabel">&minus;</button>
 				<span id="lineHeightValue">1.75</span>
-				<button type="button" id="lineHeightPlus" title="增大行距" aria-label="增大行距">+</button>
+				<button type="button" id="lineHeightPlus" title="${escapeHtml(t.linePlusLabel)}" aria-label="${escapeHtml(t.linePlusLabel)}" data-i18n-title="linePlusLabel" data-i18n-aria="linePlusLabel">+</button>
 			</div>
-			<div class="seg" role="group" aria-label="文档操作">
-				<a class="dl-btn" id="downloadBtn" href="${escapeHtml(downloadUrl ?? "#")}" download title="下载当前文档（Markdown 原文）" aria-label="下载当前文档">${icon("download")}</a>
-				<button type="button" class="dl-btn" id="exportBtn" title="导出 HTML（含 Agent 回复，可离线打开）" aria-label="导出 HTML">${icon("export")}</button>
+			<div class="seg" role="group" aria-label="${escapeHtml(t.groupDoc)}" data-i18n-aria="groupDoc">
+				<a class="dl-btn" id="downloadBtn" href="${escapeHtml(downloadUrl ?? "#")}" download title="${escapeHtml(t.downloadTitle)}" aria-label="${escapeHtml(t.downloadLabel)}" data-i18n-title="downloadTitle" data-i18n-aria="downloadLabel">${icon("download")}</a>
+				<button type="button" class="dl-btn" id="exportBtn" title="${escapeHtml(t.exportTitle)}" aria-label="${escapeHtml(t.exportLabel)}" data-i18n-title="exportTitle" data-i18n-aria="exportLabel">${icon("export")}</button>
+			</div>
+			<div class="seg" id="langSeg" role="group" aria-label="${escapeHtml(t.groupLang)}" data-i18n-aria="groupLang">
+				<button type="button" data-lang-set="en" title="${escapeHtml(t.langEn)}" aria-label="${escapeHtml(t.langEn)}" data-i18n-title="langEn" data-i18n-aria="langEn">${escapeHtml(t.langEn)}</button>
+				<button type="button" data-lang-set="zh" title="${escapeHtml(t.langZh)}" aria-label="${escapeHtml(t.langZh)}" data-i18n-title="langZh" data-i18n-aria="langZh">${escapeHtml(t.langZh)}</button>
 			</div>
 		</div>
 	</div>
 </header>
 
 <div class="layout" id="layout">
-	<div class="qa-rail" id="qaRail" aria-label="Agent 回复"></div>
+	<div class="qa-rail" id="qaRail" aria-label="${escapeHtml(t.qaRailLabel)}" data-i18n-aria="qaRailLabel"></div>
 	<main class="article">
 		<div class="content" id="content">
 ${bodyHtml}
@@ -2167,27 +2299,27 @@ ${bodyHtml}
 		<footer class="doc-foot">
 			<span>pi &middot; md-preview</span>
 			<span>&middot;</span>
-			${version ? `<span>版本 ${escapeHtml(version)}</span><span>&middot;</span>` : ""}
-			<span>内容实时渲染自源文件，关闭本页面后预览服务自动退出</span>
+			${version ? `<span><span data-i18n="versionPrefix">${escapeHtml(t.versionPrefix)}</span>${escapeHtml(version)}</span><span>&middot;</span>` : ""}
+			<span data-i18n="footerNote">${escapeHtml(t.footerNote)}</span>
 		</footer>
 	</main>
 	<aside class="toc" id="toc">
-		<div class="toc-title">目录</div>
+		<div class="toc-title" data-i18n="tocTitle">${escapeHtml(t.tocTitle)}</div>
 		<nav id="tocNav"></nav>
 	</aside>
 </div>
 
-<button type="button" class="qa-sel-btn" id="qaSelBtn" hidden>✦ 提问</button>
+<button type="button" class="qa-sel-btn" id="qaSelBtn" hidden data-i18n="qaSelBtn">${escapeHtml(t.qaSelBtn)}</button>
 <div class="qa-panel" id="askPanel" hidden>
 	<div class="qa-panel-quote" id="qaPanelQuote"></div>
-	<textarea id="qaPanelInput" rows="3" placeholder="就选中内容向 Agent 提问…（Enter 发送，Shift+Enter 换行）"></textarea>
+	<textarea id="qaPanelInput" rows="3" placeholder="${escapeHtml(t.qaPanelPlaceholder)}" data-i18n-placeholder="qaPanelPlaceholder"></textarea>
 	<div class="qa-panel-actions">
-		<button type="button" id="qaPanelSend" class="primary">发送</button>
-		<button type="button" id="qaPanelCancel">取消</button>
+		<button type="button" id="qaPanelSend" class="primary" data-i18n="qaSend">${escapeHtml(t.qaSend)}</button>
+		<button type="button" id="qaPanelCancel" data-i18n="qaCancel">${escapeHtml(t.qaCancel)}</button>
 	</div>
 </div>
 
-<button class="to-top" id="toTop" type="button" aria-label="回到顶部" title="回到顶部">${icon("up")}</button>
+<button class="to-top" id="toTop" type="button" aria-label="${escapeHtml(t.toTop)}" title="${escapeHtml(t.toTop)}" data-i18n-title="toTop" data-i18n-aria="toTop">${icon("up")}</button>
 <div class="toast" id="toast" role="status"></div>
 
 <script>window.__MDP__ = ${docState};</script>

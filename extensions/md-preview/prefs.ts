@@ -18,25 +18,28 @@ import * as path from "node:path";
 
 export type ThemePref = "system" | "light" | "dark";
 
-/** 阅读背景：white=纯白（默认）、dim=暗白、wood=木色、cyan=青色。 */
+/** Reading background: white = pure white (default), dim = dimmed white, wood = wood tone, cyan = cyan tint. */
 export type BgPref = "white" | "dim" | "wood" | "cyan";
 
+/** UI language of the preview page. */
+export type UiLang = "en" | "zh";
+
 export interface UserPrefs {
-	/** null = 未设置（回退到环境变量提示 / 跟随系统）。 */
+	/** null = not set (falls back to the env hint / following the OS theme). */
 	theme: ThemePref | null;
-	/** null = 未设置（回退到纯白）。 */
+	/** null = not set (falls back to pure white). */
 	bg: BgPref | null;
-	/** null = 未设置（回退到 100%）。 */
+	/** null = not set (falls back to 100%). */
 	scale: number | null;
-	/** null = 未设置（回退到 1.75）。 */
+	/** null = not set (falls back to 1.75). */
 	lineHeight: number | null;
 }
 
-/** 与前端 setScale 的钳制范围保持一致。 */
+/** Kept in sync with the front-end setScale clamp range. */
 export const SCALE_MIN = 0.7;
 export const SCALE_MAX = 1.6;
 
-/** 与前端 setLineHeight 的钳制范围保持一致。 */
+/** Kept in sync with the front-end setLineHeight clamp range. */
 export const LINEHEIGHT_MIN = 1.4;
 export const LINEHEIGHT_MAX = 2.2;
 
@@ -58,7 +61,24 @@ export function clampLineHeight(value: unknown): number | null {
 	return Math.min(LINEHEIGHT_MAX, Math.max(LINEHEIGHT_MIN, Math.round(value * 100) / 100));
 }
 
-/** 读取时机而非模块加载时求值，方便测试注入 XDG_CONFIG_HOME。 */
+/** Accepts "en"/"zh" (case-insensitive; "zh-CN"-style tags collapse to "zh"); null = not set. */
+export function normalizeUiLang(value: unknown): UiLang | null {
+	if (typeof value !== "string") return null;
+	const v = value.trim().toLowerCase();
+	if (v === "en" || v.startsWith("en-") || v.startsWith("en_")) return "en";
+	if (v === "zh" || v.startsWith("zh-") || v.startsWith("zh_")) return "zh";
+	return null;
+}
+
+/**
+ * Language priority: explicit tool argument > MD_PREVIEW_LANG env hint > "en".
+ * Evaluated at call time (not module load) so tests can inject the env var.
+ */
+export function resolveUiLang(explicit?: UiLang | null): UiLang {
+	return normalizeUiLang(explicit) ?? normalizeUiLang(process.env.MD_PREVIEW_LANG) ?? "en";
+}
+
+/** Evaluated at call time rather than module load, so tests can inject XDG_CONFIG_HOME. */
 export function prefsFilePath(): string {
 	const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
 	return path.join(base, "md-preview", "settings.json");
@@ -81,7 +101,7 @@ export function loadPrefs(file: string = prefsFilePath()): UserPrefs {
 
 export function savePrefs(patch: Partial<UserPrefs>, file: string = prefsFilePath()): UserPrefs {
 	const merged = loadPrefs(file);
-	// 仅覆盖调用方显式给出的键；显式传 null 表示重置回默认值。
+	// Only keys the caller explicitly provided are overwritten; an explicit null resets to the default.
 	if (patch.theme !== undefined) merged.theme = normalizeTheme(patch.theme);
 	if (patch.bg !== undefined) merged.bg = normalizeBg(patch.bg);
 	if (patch.scale !== undefined) merged.scale = clampScale(patch.scale);
@@ -100,7 +120,7 @@ function writePrefsAtomic(prefs: UserPrefs, file: string): void {
 		try {
 			fs.rmSync(tmp, { force: true });
 		} catch {
-			/* 清理失败无碍 */
+			/* cleanup failure is harmless */
 		}
 	}
 }
@@ -111,9 +131,10 @@ let pendingFile: string | null = null;
 let exitHookRegistered = false;
 
 /**
- * 防抖保存：字号/行距连点 / 主题快速切换时合并成一次磁盘写入；
- * 进程退出前把尚未落盘的合并补丁同步写掉，避免丢失。
- * 同步返回合并后的偏好视图（供 HTTP 响应立即使用，不等落盘）。
+ * Debounced save: rapid font-size / line-height clicks or theme toggles are
+ * merged into a single disk write; a pending merge is flushed synchronously on
+ * process exit so nothing is lost. Returns the merged prefs view right away (for
+ * the HTTP response) without waiting for the write.
  */
 export function savePrefsDebounced(patch: Partial<UserPrefs>, file: string = prefsFilePath()): UserPrefs {
 	pendingPatch = { ...pendingPatch, ...patch };
@@ -138,7 +159,7 @@ export function savePrefsDebounced(patch: Partial<UserPrefs>, file: string = pre
 	return { ...loadPrefs(file), ...resolvePatch(pendingPatch) };
 }
 
-/** 与 savePrefs 相同的校验语义：显式 null 重置，非法值忽略。 */
+/** Same validation semantics as savePrefs: explicit null resets, invalid values are ignored. */
 function resolvePatch(patch: Partial<UserPrefs> | null): { theme: ThemePref | null; bg: BgPref | null; scale: number | null; lineHeight: number | null } {
 	const out = {
 		theme: undefined as ThemePref | null | undefined,

@@ -23,6 +23,7 @@
 	},
 	"scripts": {
 		"check": "node scripts/check.mjs",
+		"check:i18n": "node scripts/i18n-check.mjs && node scripts/page-i18n-check.mjs",
 		"demo": "node scripts/demo.mjs",
 		"vendor:mermaid": "node scripts/vendor-mermaid.mjs"
 	}

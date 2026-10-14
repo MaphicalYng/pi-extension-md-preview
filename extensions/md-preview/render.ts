@@ -105,8 +105,9 @@ export function renderMarkdown(source: string, options: RenderOptions = {}): Ren
 			},
 			code(token: Tokens.Code) {
 				const lang = (token.lang ?? "").trim().split(/\s+/)[0] ?? "";
-				// mermaid 图表块输出裸 pre 占位（含转义源码），由 page.ts 识别 .mermaid
-				// 并加载同源运行时绘图，不进代码块增强（code-block / code-head）流程。
+				// Mermaid diagram blocks emit a bare <pre> placeholder (holding the escaped
+				// source); page.ts detects `.mermaid` and loads the same-origin runtime to
+				// draw it, bypassing the code-block / code-head enhancement path.
 				if (lang.toLowerCase() === "mermaid") {
 					return `<pre class="mermaid">${escapeHtml(token.text)}</pre>\n`;
 				}

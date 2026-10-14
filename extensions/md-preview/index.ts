@@ -16,32 +16,34 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentServer, ensureServer, type QaEntry } from "./server";
 import { openBrowser } from "./browser";
+import type { UiLang } from "./prefs";
 
 type Notify = (message: string, type?: "info" | "warning" | "error") => void;
 
 /**
- * 会话信使：由扩展工厂注入，用于把预览页提问送进 pi 会话。
- * followUp 投递在 Agent 空闲时立即唤起新 turn，忙时排队到当前 turn 结束后唤起。
+ * Session messenger injected by the extension factory; it delivers a preview-page
+ * question into the pi session. A follow-up is delivered immediately when the
+ * agent is idle, and queued to wake a turn after the current one when it is busy.
  */
 let sessionMessenger: ((text: string) => void) | null = null;
 
-/** 把预览页提问格式化为注入 pi 会话的用户消息。 */
+/** Format a preview-page question as a user message injected into the pi session. */
 function formatAskMessage(qa: QaEntry & { title: string }): string {
-	const quote = qa.quote.length > 1200 ? `${qa.quote.slice(0, 1200)}\n…（原文过长已截断）` : qa.quote;
+	const quote = qa.quote.length > 1200 ? `${qa.quote.slice(0, 1200)}\n…[quote truncated]` : qa.quote;
 	return [
-		"【Markdown 预览页提问】",
+		"[Markdown preview page question]",
 		"",
-		`文档：《${qa.title}》`,
+		`Document: "${qa.title}"`,
 		"",
-		"用户在预览页选中了以下原文：",
+		"The user selected the following passage in the preview page:",
 		"",
 		"```text",
 		quote,
 		"```",
 		"",
-		`问题：${qa.question}`,
+		`Question: ${qa.question}`,
 		"",
-		`请结合相关文件内容回答，并调用 md_preview_reply 工具把答复送回预览页（question_id: "${qa.id}"）。`,
+		`Answer based on the relevant file contents, then send the reply back to the preview page with the md_preview_reply tool (question_id: "${qa.id}").`,
 	].join("\n");
 }
 
@@ -51,89 +53,98 @@ interface PreviewOutcome {
 	text: string;
 	url?: string;
 	opened?: boolean;
+	/** UI language that actually took effect for the document. */
+	uiLang?: UiLang;
 }
 
 /** Shared by the `md_preview` tool and the `/md-preview` command. */
 async function previewMarkdown(
 	file: string,
-	opts: { cwd: string; title?: string; open?: boolean; notify?: Notify },
+	opts: { cwd: string; title?: string; uiLang?: UiLang; open?: boolean; notify?: Notify },
 ): Promise<PreviewOutcome> {
 	const abs = path.isAbsolute(file) ? path.normalize(file) : path.resolve(opts.cwd, file);
 	let stat: fs.Stats;
 	try {
 		stat = await fs.promises.stat(abs);
 	} catch {
-		return { ok: false, text: `预览失败：找不到文件 \`${abs}\`。请先用 write 工具创建该文件。` };
+		return { ok: false, text: `Preview failed: file not found at \`${abs}\`. Create it first (for example with the write tool).` };
 	}
 	if (!stat.isFile()) {
-		return { ok: false, text: `预览失败：\`${abs}\` 不是一个普通文件。` };
+		return { ok: false, text: `Preview failed: \`${abs}\` is not a regular file.` };
 	}
 
 	const server = await ensureServer({
 		onShutdown: (reason) => {
 			try {
-				opts.notify?.(`Markdown 预览：${reason}`, "info");
+				opts.notify?.(`Markdown preview: ${reason}`, "info");
 			} catch {
 				/* session may already be gone; nothing to notify */
 			}
 		},
 	});
-	// 预览页提问 → 注入 pi 会话唤醒 Agent 作答。
+	// Preview-page question -> wake the agent by injecting it into the pi session.
 	server.onAsk = (qa) => sessionMessenger?.(formatAskMessage(qa));
-	const handle = await server.openDocument(abs, { cwd: opts.cwd, title: opts.title });
+	const handle = await server.openDocument(abs, { cwd: opts.cwd, title: opts.title, uiLang: opts.uiLang });
 
 	const tabAlreadyOpen = handle.liveViewers > 0;
 	const opened = !tabAlreadyOpen && opts.open !== false ? openBrowser(handle.url) : false;
 	try {
-		opts.notify?.(`Markdown 预览已就绪：${handle.title}`, "info");
+		opts.notify?.(`Markdown preview is ready: ${handle.title}`, "info");
 	} catch {
 		/* notification is best-effort */
 	}
 
 	const browserLine = tabAlreadyOpen
-		? "复用已打开的预览标签页（文件更新会自动同步过去）"
+		? "Reusing the already-open preview tab (file updates sync automatically)"
 		: opened
-			? "已自动打开浏览器预览标签页"
-			: "未能自动打开浏览器，请手动访问上面的地址";
+			? "Opened the browser preview tab automatically"
+			: "Could not open the browser automatically; open the URL above manually";
 
 	return {
 		ok: true,
 		opened,
 		url: handle.url,
+		uiLang: handle.uiLang,
 		text: [
-			`Markdown 预览已就绪：**${handle.title}**`,
-			`- 页面地址：<${handle.url}>`,
-			`- 源文件：\`${abs}\``,
-			`- 浏览器：${browserLine}`,
-			`- 实时同步：文件内容修改后页面会自动刷新，无需再次调用本工具`,
-			`- 自动退出：用户关闭浏览器标签页后预览服务会自动停止，你无需保持工作或轮询状态`,
+			`Markdown preview is ready: **${handle.title}**`,
+			`- Page URL: <${handle.url}>`,
+			`- Source file: \`${abs}\``,
+			`- Browser: ${browserLine}`,
+			`- Live sync: the page refreshes automatically when the file changes; no need to call this tool again`,
+			`- Auto-exit: the preview server stops once the user closes the browser tab, so you do not need to keep working or poll its status`,
 			``,
-			`请把页面地址发给用户，供其阅读；随后即可继续你的其他工作。`,
+			`Share the page URL with the user so they can read it, then continue with your other work.`,
 		].join("\n"),
 	};
 }
 
 const mdPreviewTool = defineTool({
 	name: "md_preview",
-	label: "Markdown 预览",
+	label: "Markdown Preview",
 	description:
-		"用专业排版的 Web 页面渲染一个 Markdown 文件，并自动打开浏览器标签页供用户阅读。" +
-		"强制触发规则：只要你要输出的内容是结构化内容（报告、调研结果、设计文档、README、多段落/多小节文章、表格、列表、代码示例等），" +
-		"且字符数大于 150，就必须先把内容写入 .md 文件，然后调用本工具展示，不得只在终端里输出。" +
-		"页面自带目录导航、代码高亮、明亮/黑暗模式和字体大小调节；" +
-		"源文件被修改后页面自动刷新。工具立即返回，之后你无需保持工作：用户关闭标签页时预览服务会自动退出。",
-	promptSnippet: "md_preview: 输出结构化内容且字符数 > 150 时必须调用——写入 .md 后用 Web 页面在浏览器展示",
+		"Render a Markdown file as a professionally typeset web page and open a browser tab for the user to read. " +
+		"Mandatory trigger rule: whenever the output you are about to produce is structured content (a report, research findings, a design document, a README, a multi-paragraph/multi-section article, a table, a list, a code example, etc.) and is longer than 150 characters, you must first write it to a .md file and then call this tool to present it; never output it only in the terminal. " +
+		"The page ships with table-of-contents navigation, code highlighting, light/dark modes, and font-size controls; " +
+		"the page refreshes automatically after the source file is modified. The tool returns immediately and you do not need to keep working afterwards: the preview server exits automatically once the user closes the tab.",
+	promptSnippet: "md_preview: mandatory when the output is structured content longer than 150 characters — write the .md file first, then present it as a web page in the browser",
 	promptGuidelines: [
-		"强制规则：输出内容为结构化内容（报告、文档、多段落/多小节、表格、列表、代码示例等）且字符数大于 150 时，必须将内容写入 .md 文件并调用 md_preview 在浏览器中展示，不得只在终端里输出；此时不要犹豫或降级为纯文本回复。",
-		"向用户呈现需要仔细阅读的长篇报告或 Markdown 文档时，将内容写入 .md 文件后调用 md_preview 在浏览器中展示，而不是只在终端里输出。",
-		"md_preview 返回后，把页面地址发给用户即可继续后续工作，不要等待用户关闭页面，也不要重复调用来刷新页面。",
+		"Mandatory rule: when the output is structured content (a report, a document, multi-paragraph/multi-section text, a table, a list, a code example, etc.) longer than 150 characters, you must write it to a .md file and call md_preview to present it in the browser; never output it only in the terminal, and do not hesitate or downgrade to a plain-text reply.",
+		"When presenting a long report or Markdown document that the user needs to read carefully, write it to a .md file and call md_preview to present it in the browser instead of only printing it in the terminal.",
+		"After md_preview returns, share the page URL with the user and continue with your other work; do not wait for the user to close the page, and do not call the tool repeatedly just to refresh the page.",
 	],
 	parameters: Type.Object({
 		file: Type.String({
-			description: "要预览的 Markdown 文件路径（绝对路径，或相对当前工作目录的路径）",
+			description: "Path of the Markdown file to preview (absolute, or relative to the current working directory)",
 		}),
-		title: Type.Optional(Type.String({ description: "页面标题；默认取文档第一个一级标题" })),
-		open_browser: Type.Optional(Type.Boolean({ description: "是否自动打开浏览器标签页，默认 true" })),
+		title: Type.Optional(Type.String({ description: "Page title; defaults to the first level-1 heading of the document" })),
+		open_browser: Type.Optional(Type.Boolean({ description: "Whether to open a browser tab automatically; default true" })),
+		ui_lang: Type.Optional(
+			Type.Union([Type.Literal("en"), Type.Literal("zh")], {
+				description:
+					'UI language of the preview page ("en" or "zh"). Falls back to $MD_PREVIEW_LANG, then "en". ' +
+					"Passing a different value updates the language of an already-open document.",
+			}),
+		),
 	}),
 	annotations: {
 		readOnlyHint: true,
@@ -146,6 +157,7 @@ const mdPreviewTool = defineTool({
 		const outcome = await previewMarkdown(params.file, {
 			cwd: ctx.cwd,
 			title: params.title,
+			uiLang: params.ui_lang,
 			open: params.open_browser,
 			notify: ctx.hasUI ? (message, type) => ctx.ui.notify(message, type) : undefined,
 		});
@@ -155,6 +167,7 @@ const mdPreviewTool = defineTool({
 				file: params.file,
 				url: outcome.url ?? null,
 				opened: outcome.opened ?? false,
+				ui_lang: outcome.uiLang ?? null,
 			},
 			isError: !outcome.ok,
 		};
@@ -162,20 +175,21 @@ const mdPreviewTool = defineTool({
 });
 
 /**
- * Agent 回复预览页提问的出口：页面提问经 onAsk 注入会话后，模型阅读相关文件，
- * 再通过本工具把答复送回预览页（SSE 推送到所有打开该文档的标签页）。
+ * Exit point for agent replies to preview-page questions: after a question is
+ * injected into the session through onAsk, the model reads the relevant files and
+ * sends the answer back with this tool (pushed to every open tab over SSE).
  */
 const mdPreviewReplyTool = defineTool({
 	name: "md_preview_reply",
-	label: "回复预览页提问",
+	label: "Reply to Preview Question",
 	description:
-		"回复用户在 Markdown 预览页面中就选中文本提出的提问。仅当收到「Markdown 预览页提问」消息时调用；" +
-		"回复会以卡片形式显示在预览页文档左侧，包含原文、回复内容与回复时间。",
+		"Reply to a question the user asked about a passage selected in the Markdown preview page. Call it only after receiving a \"[Markdown preview page question]\" message; " +
+		"the reply appears as a card on the left side of the preview page, showing the quoted passage, the reply text, and the reply time.",
 	parameters: Type.Object({
 		question_id: Type.Optional(Type.String({
-			description: "提问 ID（提问消息中会给出，如 q1）；省略时回复最早未回复的提问",
+			description: "Question ID (given in the question message, e.g. q1); omit to reply to the earliest unanswered question",
 		})),
-		text: Type.String({ description: "回复内容，支持 Markdown" }),
+		text: Type.String({ description: "Reply text (Markdown supported)" }),
 	}),
 	annotations: {
 		readOnlyHint: false,
@@ -186,7 +200,7 @@ const mdPreviewReplyTool = defineTool({
 	async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 		const server = currentServer();
 		if (!server) {
-			return { content: [{ type: "text", text: "当前没有运行中的 Markdown 预览服务。" }], isError: true, details: undefined };
+			return { content: [{ type: "text", text: "No Markdown preview server is running." }], isError: true, details: undefined };
 		}
 		const result = server.answerQuestion(params.question_id ?? undefined, params.text);
 		return {
@@ -226,7 +240,7 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 			try {
 				pi.sendUserMessage(text);
 			} catch {
-				/* 会话繁忙且不支持排队：提问保留在预览页待回复列表中 */
+				/* session busy and queueing unsupported: the question stays pending on the preview page */
 			}
 		}
 	};
@@ -234,7 +248,7 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 	pi.registerTool(mdPreviewReplyTool);
 
 	pi.registerCommand("md-preview", {
-		description: "用 Web UI 渲染并预览 Markdown 文件：/md-preview <文件路径>",
+		description: "Render and preview a Markdown file in the web UI: /md-preview <file path>",
 		getArgumentCompletions: completeMarkdownFiles,
 		handler: async (args, ctx) => {
 			const file = args.trim();
@@ -242,12 +256,12 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 			if (!file) {
 				const docs = currentServer()?.listDocuments() ?? [];
 				const list = docs.length
-					? docs.map((d) => `- ${d.title}（${d.filePath}，${d.viewers} 个标签页）`).join("\n")
-					: "（当前没有预览中的文档）";
+					? docs.map((d) => `- ${d.title} (${d.filePath}, ${d.viewers} tab(s))`).join("\n")
+					: " (no documents being previewed)";
 				pi.sendMessage({
 					customType: "md_preview",
 					display: true,
-					content: `用法：\`/md-preview <文件路径>\`\n\n当前预览：\n${list}`,
+					content: `Usage: \`/md-preview <file path>\`\n\nCurrent previews:\n${list}`,
 				});
 				return;
 			}
@@ -259,6 +273,6 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 	// Safety net: never leak the preview server past the session. The server also
 	// self-exits shortly after the user closes the browser tab.
 	pi.on("session_shutdown", (event) => {
-		void currentServer()?.shutdown(`pi 会话结束（${event.reason}）`);
+		void currentServer()?.shutdown(`pi session ended (${event.reason})`);
 	});
 }

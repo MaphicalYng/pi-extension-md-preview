@@ -14,7 +14,7 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { renderMarkdown, escapeHtml, type RenderedDoc, type TocItem } from "./render";
 import { renderPage } from "./page";
-import { loadPrefs, savePrefsDebounced, normalizeTheme, normalizeBg, clampScale, clampLineHeight, type ThemePref, type BgPref } from "./prefs";
+import { loadPrefs, savePrefsDebounced, normalizeTheme, normalizeBg, clampScale, clampLineHeight, resolveUiLang, type ThemePref, type BgPref, type UiLang } from "./prefs";
 
 const IDLE_MS = 8_000; // shutdown this long after the last tab goes away
 const NEVER_OPENED_MS = 5 * 60_000; // shutdown if nobody ever opened a tab
@@ -31,6 +31,8 @@ export interface PreviewHandle {
 	/** Tabs currently connected to this document. */
 	liveViewers: number;
 	port: number;
+	/** UI language this document is rendered with. */
+	uiLang: UiLang;
 }
 
 interface DocState {
@@ -49,23 +51,25 @@ interface DocState {
 	reloadTimer: ReturnType<typeof setTimeout> | null;
 	/** connection id -> client id (one browser tab) */
 	viewers: Map<string, string>;
+	/** UI language of this document: drives page rendering, SSE payloads and error notices. */
+	uiLang: UiLang;
 }
 
-/** 预览页「选中提问」的一条问答记录 */
+/** One question-and-answer record created from a selected-text question on the preview page. */
 export interface QaEntry {
 	id: string;
 	docId: string;
-	/** 用户在预览页选中的原文 */
+	/** Original passage the user selected in the preview page. */
 	quote: string;
-	/** 用户的提问 */
+	/** The user's question. */
 	question: string;
-	/** Agent 回复（服务端渲染后的 HTML；原始 HTML 已按转义文本渲染） */
+	/** Agent reply as server-rendered HTML (raw HTML in the reply is rendered as escaped text). */
 	answerHtml?: string;
 	askedAt: number;
 	answeredAt?: number;
 }
 
-/** 下发到页面的问答数据形态（answerHtml 为 null 表示待回复） */
+/** Q&A payload shape sent to the page (answerHtml null = still awaiting a reply). */
 export interface QaPayload {
 	id: string;
 	quote: string;
@@ -77,9 +81,9 @@ export interface QaPayload {
 
 const MAX_QA_PER_DOC = 50;
 
-// ----------------------------------------------------------- 版本号（页脚）
+// ----------------------------------------------------------- version (footer)
 
-/** 从当前文件位置向上找扩展根目录（含本扩展 package.json 的目录）。 */
+/** Walk up from the current file location to the extension root (the directory whose package.json names this extension). */
 function findExtensionRoot(startDir: string): string | null {
 	let dir = startDir;
 	for (let i = 0; i < 6; i++) {
@@ -87,7 +91,7 @@ function findExtensionRoot(startDir: string): string | null {
 			const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")) as { name?: string };
 			if (pkg.name === "pi-extension-md-preview") return dir;
 		} catch {
-			/* 继续向上 */
+			/* keep walking up */
 		}
 		const parent = path.dirname(dir);
 		if (parent === dir) break;
@@ -99,9 +103,10 @@ function findExtensionRoot(startDir: string): string | null {
 let cachedVersion: string | null | undefined;
 
 /**
- * 页脚版本号：提交日期 + 短 commit id（如 2026-10-13 · 9311172）。
- * 首次渲染时向扩展根目录 spawn 一次 git（不经 shell）；工作区有改动追加 -dirty；
- * 找不到 git / 仓库时返回 null，页面不显示页脚。
+ * Footer version: commit date + short commit id (e.g. 2026-10-13 · 9311172).
+ * On the first render a single git process is spawned (without a shell) in the
+ * extension root; a dirty worktree appends -dirty. Returns null when git or the
+ * repository is unavailable, in which case the page shows no footer.
  */
 function resolveVersion(): string | null {
 	if (cachedVersion !== undefined) return cachedVersion;
@@ -128,18 +133,18 @@ function resolveVersion(): string | null {
 			}).trim();
 			if (status) dirty = "-dirty";
 		} catch {
-			/* 忽略脏检查失败 */
+			/* ignore dirty-check failure */
 		}
 		cachedVersion = `${date} · ${hash}${dirty}`;
 	} catch {
-		/* 无 git 或不在仓库中：不显示版本 */
+		/* no git, or not inside a repository: no version shown */
 	}
 	return cachedVersion;
 }
 
 let cachedMermaidPath: string | null | undefined;
 
-/** vendored mermaid ESM 单文件路径（extensions/md-preview/vendor/mermaid.esm.min.mjs）。 */
+/** Path of the vendored single-file mermaid ESM bundle (extensions/md-preview/vendor/mermaid.esm.min.mjs). */
 function resolveMermaidVendor(): string | null {
 	if (cachedMermaidPath !== undefined) return cachedMermaidPath;
 	const here = typeof __dirname === "string" ? __dirname : process.cwd();
@@ -164,6 +169,11 @@ const CONTENT_TYPES: Record<string, string> = {
 	js: "text/javascript; charset=utf-8",
 };
 
+// page.ts (module B) adds `lang` to PageOptions later; declaring the extra field
+// here keeps both modules type-checking independently. Intersections are
+// idempotent, so this stays valid after module B lands.
+type RenderPageArgs = Parameters<typeof renderPage>[0] & { lang?: UiLang };
+
 export class PreviewServer {
 	private server: http.Server;
 	private docs = new Map<string, DocState>();
@@ -179,7 +189,7 @@ export class PreviewServer {
 	private noViewerSince: number | null = null;
 	private shuttingDown = false;
 	private onShutdown?: (reason: string) => void;
-	/** 预览页收到提问时回调（扩展用它把提问注入 pi 会话以唤醒 Agent） */
+	/** Callback fired when the preview page receives a question (the extension uses it to inject the question into the pi session and wake the agent). */
 	onAsk: ((qa: QaEntry & { title: string }) => void) | null = null;
 	private qa = new Map<string, QaEntry>();
 	private qaSeq = 0;
@@ -216,7 +226,7 @@ export class PreviewServer {
 	// ---------------------------------------------------------------- docs
 
 	/** Register (or reuse) a document and return its preview handle. */
-	async openDocument(filePath: string, opts: { cwd?: string; title?: string } = {}): Promise<PreviewHandle> {
+	async openDocument(filePath: string, opts: { cwd?: string; title?: string; uiLang?: UiLang } = {}): Promise<PreviewHandle> {
 		const abs = path.resolve(filePath);
 		// A freshly requested document gives a browser tab a new chance to
 		// connect: restart the no-viewer grace windows so the sweep cannot shut
@@ -224,10 +234,21 @@ export class PreviewServer {
 		this.startedAt = Date.now();
 		this.noViewerSince = null;
 		if (opts.cwd) this.roots.add(path.resolve(opts.cwd));
+		const uiLang = resolveUiLang(opts.uiLang);
 		const existing = this.byPath.get(abs);
 		if (existing) {
 			if (opts.title && opts.title !== existing.explicitTitle) {
 				existing.explicitTitle = opts.title;
+				await this.refresh(existing);
+				this.broadcastUpdate(existing);
+			}
+			// Language update policy (PM revision): only an explicitly supplied uiLang may
+			// change the language of an already-open document, so a repeated call that
+			// omits ui_lang keeps the current language instead of resetting it.
+			if (opts.uiLang !== undefined && uiLang !== existing.uiLang) {
+				existing.uiLang = uiLang;
+				// Re-render so a localized error notice (if any) matches the new language,
+				// then push it over SSE — open tabs pick it up on their auto-refresh.
 				await this.refresh(existing);
 				this.broadcastUpdate(existing);
 			}
@@ -248,6 +269,7 @@ export class PreviewServer {
 			watcher: null,
 			reloadTimer: null,
 			viewers: new Map(),
+			uiLang,
 		};
 		this.docs.set(doc.id, doc);
 		this.byPath.set(abs, doc);
@@ -279,6 +301,7 @@ export class PreviewServer {
 			reused,
 			liveViewers: doc.viewers.size,
 			port: this.port,
+			uiLang: doc.uiLang,
 		};
 	}
 
@@ -329,8 +352,10 @@ export class PreviewServer {
 			doc.rendered = renderMarkdown(source, { resolveLink: this.linkResolver(doc) });
 		} catch (err) {
 			doc.sourceMissing = true;
+			// The notice is data, localized at render time by the document's language.
+			const detail = `${escapeHtml(doc.filePath)}<br>${escapeHtml(String(err))}`;
 			doc.rendered = {
-				html: `<div class="notice">文件无法读取：${escapeHtml(doc.filePath)}<br>${escapeHtml(String(err))}</div>`,
+				html: `<div class="notice">${doc.uiLang === "zh" ? `文件无法读取：${detail}` : `Cannot read file: ${detail}`}</div>`,
 				toc: [],
 				title: doc.label,
 			};
@@ -381,11 +406,12 @@ export class PreviewServer {
 			html: doc.rendered.html,
 			toc: doc.rendered.toc as TocItem[],
 			title: this.titleFor(doc),
+			lang: doc.uiLang,
 		});
 		this.broadcastEvent(doc.id, "update", payload);
 	}
 
-	// ------------------------------------------------------- 选中提问（Q&A）
+	// ------------------------------------------------- selected-text Q&A
 
 	private qaPayload(e: QaEntry): QaPayload {
 		return {
@@ -402,7 +428,7 @@ export class PreviewServer {
 		return [...this.qa.values()].filter((e) => e.docId === docId).map((e) => this.qaPayload(e));
 	}
 
-	/** 预览页提交提问：落库、广播 SSE ask、回调扩展注入 pi 会话。 */
+	/** The preview page submitted a question: persist it, broadcast the SSE ask event, and let the extension inject it into the pi session. */
 	ask(doc: DocState, quote: string, question: string): QaEntry {
 		const entry: QaEntry = { id: `q${++this.qaSeq}`, docId: doc.id, quote, question, askedAt: Date.now() };
 		this.qa.set(entry.id, entry);
@@ -414,29 +440,30 @@ export class PreviewServer {
 		try {
 			this.onAsk?.({ ...entry, title: this.titleFor(doc) });
 		} catch {
-			/* 注入 pi 会话失败不阻塞提问本身 */
+			/* failing to inject into the pi session must not block the question itself */
 		}
 		return entry;
 	}
 
 	/**
-	 * md_preview_reply 工具入口：记录 Agent 回复并广播 SSE answer 事件。
-	 * questionId 省略时回复最早未回复的提问。
+	 * md_preview_reply tool entry point: stores the agent reply and broadcasts the
+	 * SSE answer event. When questionId is omitted the earliest unanswered
+	 * question is answered.
 	 */
 	answerQuestion(questionId: string | undefined, text: string): { ok: boolean; message: string } {
 		const answer = (text ?? "").trim();
-		if (!answer) return { ok: false, message: "回复内容为空。" };
+		if (!answer) return { ok: false, message: "Reply text is empty." };
 		let entry: QaEntry | undefined;
 		if (questionId) entry = this.qa.get(questionId);
 		else for (const e of this.qa.values()) if (!e.answerHtml) { entry = e; break; }
 		if (!entry || entry.answerHtml) {
-			const pending = [...this.qa.values()].filter((e) => !e.answerHtml).map((e) => e.id).join(", ") || "无";
-			return { ok: false, message: `未找到可回复的提问（question_id=${questionId ?? "最早未回复"}）。当前未回复的提问：${pending}` };
+			const pending = [...this.qa.values()].filter((e) => !e.answerHtml).map((e) => e.id).join(", ") || "none";
+			return { ok: false, message: `No pending question found (question_id=${questionId ?? "earliest unanswered"}). Pending questions: ${pending}` };
 		}
 		entry.answerHtml = renderMarkdown(answer).html;
 		entry.answeredAt = Date.now();
 		this.broadcastEvent(entry.docId, "answer", JSON.stringify({ id: entry.id, answerHtml: entry.answerHtml, answeredAt: entry.answeredAt }));
-		return { ok: true, message: `已回复预览页提问 ${entry.id}，回复卡片已推送到浏览器。` };
+		return { ok: true, message: `Answered preview question ${entry.id}; the reply card has been pushed to the browser.` };
 	}
 
 	// --------------------------------------------------------------- routes
@@ -498,6 +525,7 @@ export class PreviewServer {
 			watcher: null,
 			reloadTimer: null,
 			viewers: new Map(),
+			uiLang: resolveUiLang(),
 		};
 		this.docs.set(doc.id, doc);
 		this.byPath.set(filePath, doc);
@@ -509,12 +537,12 @@ export class PreviewServer {
 	private async serveDoc(res: http.ServerResponse, doc: DocState): Promise<void> {
 		await this.refreshIfStale(doc);
 		const cid = `c${++this.connSeq}`;
-		// 用户级持久化偏好优先于 MD_PREVIEW_THEME 环境变量提示；
-		// 两者都不存在时页面回退到跟随系统。
+		// User-level persisted prefs win over the MD_PREVIEW_THEME env hint;
+		// with neither set the page falls back to following the OS theme.
 		const prefs = loadPrefs();
 		const env = process.env.MD_PREVIEW_THEME;
 		const themeHint = prefs.theme ?? (env === "light" || env === "dark" || env === "system" ? env : undefined);
-		const html = renderPage({
+		const args: RenderPageArgs = {
 			docId: doc.id,
 			title: this.titleFor(doc),
 			subtitle: doc.filePath,
@@ -531,14 +559,16 @@ export class PreviewServer {
 			prefBg: prefs.bg,
 			prefsUrl: "/prefs",
 			downloadUrl: `/doc/${doc.id}/download`,
-		});
+			lang: doc.uiLang,
+		};
+		const html = renderPage(args);
 		res.statusCode = 200;
 		res.setHeader("Content-Type", "text/html; charset=utf-8");
 		res.setHeader("Cache-Control", "no-store");
 		res.end(html);
 	}
 
-	/** 下载当前文档的 Markdown 原文（始终读磁盘最新内容）。 */
+	/** Download the raw Markdown source of the current document (always reads the latest bytes from disk). */
 	private serveDownload(res: http.ServerResponse, doc: DocState): void {
 		let raw: Buffer;
 		try {
@@ -559,7 +589,7 @@ export class PreviewServer {
 		try {
 			parsed = JSON.parse(body);
 		} catch {
-			/* 空或非 JSON 主体按无效请求处理 */
+			/* an empty or non-JSON body counts as an invalid request */
 		}
 		const obj = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
 		const quote = typeof obj.quote === "string" ? obj.quote.trim().slice(0, 2000) : "";
@@ -568,7 +598,7 @@ export class PreviewServer {
 		res.setHeader("Cache-Control", "no-store");
 		if (!quote || !question) {
 			res.statusCode = 400;
-			res.end(JSON.stringify({ error: "quote 与 question 必须是非空字符串" }));
+			res.end(JSON.stringify({ error: "quote and question must be non-empty strings" }));
 			return;
 		}
 		const entry = this.ask(doc, quote, question);
@@ -587,7 +617,7 @@ export class PreviewServer {
 		res.write("retry: 2000\n\n");
 		// A tab that loaded the page before the latest render syncs immediately.
 		if (url.searchParams.get("v") !== String(doc.version)) {
-			this.writeSse(res, "init", JSON.stringify({ html: doc.rendered.html, toc: doc.rendered.toc, title: this.titleFor(doc), qa: this.qaList(doc.id) }));
+			this.writeSse(res, "init", JSON.stringify({ html: doc.rendered.html, toc: doc.rendered.toc, title: this.titleFor(doc), qa: this.qaList(doc.id), lang: doc.uiLang }));
 		}
 		this.sseConns.set(connId, res);
 		this.connDoc.set(connId, doc.id);
@@ -628,7 +658,7 @@ export class PreviewServer {
 		res.end();
 	}
 
-	/** 同源提供 vendored mermaid ESM 单文件（页面含图表时动态 import('/mermaid.mjs')，不走 CDN）。 */
+	/** Serve the vendored single-file mermaid ESM bundle from the same origin (pages with diagrams dynamically import('/mermaid.mjs') instead of using a CDN). */
 	private async serveMermaid(res: http.ServerResponse): Promise<void> {
 		const filePath = resolveMermaidVendor();
 		if (!filePath) {
@@ -668,15 +698,21 @@ export class PreviewServer {
 	}
 
 	private serveIndex(res: http.ServerResponse): void {
+		// The index page has no document context, so it follows resolveUiLang()
+		// (MD_PREVIEW_LANG env hint, then the default).
+		const lang = resolveUiLang();
 		const items = [...this.docs.values()]
 			.map((d) => `<li><a href="/doc/${d.id}">${escapeHtml(this.titleFor(d))}</a> <code>${escapeHtml(d.filePath)}</code></li>`)
 			.join("\n");
-		const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+		const heading = lang === "zh" ? "Markdown 预览" : "Markdown Preview";
+		const intro = lang === "zh" ? "当前会话打开的文档：" : "Documents open in this session:";
+		const empty = lang === "zh" ? "（无）" : "(none)";
+		const html = `<!doctype html><html lang="${lang === "zh" ? "zh-CN" : "en"}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Markdown Preview</title><style>
 :root{color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
 body{max-width:720px;margin:64px auto;padding:0 24px;line-height:1.7}
 h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color:#2563eb}
-</style></head><body><h1>Markdown Preview</h1><p>当前会话打开的文档：</p><ul>${items || "<li>（无）</li>"}</ul></body></html>`;
+</style></head><body><h1>${heading}</h1><p>${intro}</p><ul>${items || `<li>${empty}</li>`}</ul></body></html>`;
 		res.statusCode = 200;
 		res.setHeader("Content-Type", "text/html; charset=utf-8");
 		res.setHeader("Cache-Control", "no-store");
@@ -685,7 +721,7 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 
 	// ------------------------------------------------------------- prefs
 
-	/** 当前用户级偏好（调试 / 页面自检用）。 */
+	/** Current user-level preferences (for debugging / page self-checks). */
 	private servePrefs(res: http.ServerResponse): void {
 		const prefs = loadPrefs();
 		res.statusCode = 200;
@@ -695,8 +731,9 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 	}
 
 	/**
-	 * 页面在主题 / 字号 / 行距变化时上报，合并进用户级偏好文件。
-	 * 非法字段被忽略而不是报错——前端钳制值域，这里只做兜底校验。
+	 * Reported by the page whenever theme / font size / line height change; merged
+	 * into the user-level prefs file. Invalid fields are ignored instead of
+	 * erroring out — the client clamps values, this is only a safety net.
 	 */
 	private async serveSavePrefs(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
 		const body = await readBody(req);
@@ -704,12 +741,12 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 		try {
 			parsed = JSON.parse(body);
 		} catch {
-			/* 空或非 JSON 主体按“无补丁”处理 */
+			/* an empty or non-JSON body counts as "no patch" */
 		}
 		const patch: { theme?: ThemePref | null; bg?: BgPref | null; scale?: number | null; lineHeight?: number | null } = {};
 		if (parsed && typeof parsed === "object") {
 			const obj = parsed as Record<string, unknown>;
-			// 非法值忽略；显式 null 表示重置回默认。
+			// Invalid values are ignored; an explicit null resets to the default.
 			if (obj.theme !== undefined) {
 				const theme = normalizeTheme(obj.theme);
 				if (theme !== null || obj.theme === null) patch.theme = theme;
@@ -766,10 +803,10 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 		const now = Date.now();
 		if (this.hadViewer) {
 			if (this.noViewerSince === null) this.noViewerSince = now;
-			else if (now - this.noViewerSince >= IDLE_MS) void this.shutdown("所有预览标签页已关闭");
+			else if (now - this.noViewerSince >= IDLE_MS) void this.shutdown("All preview tabs were closed");
 			return;
 		}
-		if (now - this.startedAt >= NEVER_OPENED_MS) void this.shutdown("浏览器未打开预览页面");
+		if (now - this.startedAt >= NEVER_OPENED_MS) void this.shutdown("The preview page was never opened");
 	}
 
 	async shutdown(reason: string): Promise<void> {
@@ -810,7 +847,7 @@ function notFound(res: http.ServerResponse, msg: string): void {
 	res.end(msg);
 }
 
-/** RFC 5987：ASCII 回退文件名 + UTF-8 编码的真实文件名。 */
+/** RFC 5987: ASCII fallback filename plus the real UTF-8 encoded filename. */
 function contentDisposition(filename: string): string {
 	const fallback = filename.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
 	return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
