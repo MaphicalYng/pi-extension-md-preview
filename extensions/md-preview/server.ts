@@ -14,7 +14,7 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { renderMarkdown, escapeHtml, type RenderedDoc, type TocItem } from "./render";
 import { renderPage } from "./page";
-import { loadPrefs, savePrefsDebounced, normalizeTheme, clampScale, clampLineHeight, type ThemePref } from "./prefs";
+import { loadPrefs, savePrefsDebounced, normalizeTheme, normalizeBg, clampScale, clampLineHeight, type ThemePref, type BgPref } from "./prefs";
 
 const IDLE_MS = 8_000; // shutdown this long after the last tab goes away
 const NEVER_OPENED_MS = 5 * 60_000; // shutdown if nobody ever opened a tab
@@ -460,7 +460,7 @@ export class PreviewServer {
 		}
 		if (p === "/mermaid.mjs") return this.serveMermaid(res);
 		if (p.startsWith("/asset/")) return this.serveAsset(res, p.slice("/asset/".length));
-		const m = p.match(/^\/doc\/([^/]+)(\/events|\/close|\/ask)?$/);
+		const m = p.match(/^\/doc\/([^/]+)(\/events|\/close|\/ask|\/download)?$/);
 		if (m) {
 			const token = m[1] ?? "";
 			const sub = m[2] ?? "";
@@ -469,6 +469,7 @@ export class PreviewServer {
 			if (sub === "/events") return this.serveEvents(req, res, doc, url);
 			if (sub === "/close") return this.serveClose(req, res, doc, url);
 			if (sub === "/ask") return this.serveAsk(req, res, doc);
+			if (sub === "/download") return this.serveDownload(res, doc);
 			return this.serveDoc(res, doc);
 		}
 		return notFound(res, "not found");
@@ -527,12 +528,29 @@ export class PreviewServer {
 			themeHint,
 			prefScale: prefs.scale,
 			prefLineHeight: prefs.lineHeight,
+			prefBg: prefs.bg,
 			prefsUrl: "/prefs",
+			downloadUrl: `/doc/${doc.id}/download`,
 		});
 		res.statusCode = 200;
 		res.setHeader("Content-Type", "text/html; charset=utf-8");
 		res.setHeader("Cache-Control", "no-store");
 		res.end(html);
+	}
+
+	/** 下载当前文档的 Markdown 原文（始终读磁盘最新内容）。 */
+	private serveDownload(res: http.ServerResponse, doc: DocState): void {
+		let raw: Buffer;
+		try {
+			raw = fs.readFileSync(doc.filePath);
+		} catch {
+			return notFound(res, "source file not found");
+		}
+		res.statusCode = 200;
+		res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+		res.setHeader("Content-Disposition", contentDisposition(path.basename(doc.filePath)));
+		res.setHeader("Cache-Control", "no-store");
+		res.end(raw);
 	}
 
 	private async serveAsk(req: http.IncomingMessage, res: http.ServerResponse, doc: DocState): Promise<void> {
@@ -688,13 +706,17 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 		} catch {
 			/* 空或非 JSON 主体按“无补丁”处理 */
 		}
-		const patch: { theme?: ThemePref | null; scale?: number | null; lineHeight?: number | null } = {};
+		const patch: { theme?: ThemePref | null; bg?: BgPref | null; scale?: number | null; lineHeight?: number | null } = {};
 		if (parsed && typeof parsed === "object") {
 			const obj = parsed as Record<string, unknown>;
 			// 非法值忽略；显式 null 表示重置回默认。
 			if (obj.theme !== undefined) {
 				const theme = normalizeTheme(obj.theme);
 				if (theme !== null || obj.theme === null) patch.theme = theme;
+			}
+			if (obj.bg !== undefined) {
+				const bg = normalizeBg(obj.bg);
+				if (bg !== null || obj.bg === null) patch.bg = bg;
 			}
 			if (obj.scale !== undefined) {
 				const scale = clampScale(obj.scale);
@@ -786,6 +808,12 @@ function notFound(res: http.ServerResponse, msg: string): void {
 	res.statusCode = 404;
 	res.setHeader("Content-Type", "text/plain; charset=utf-8");
 	res.end(msg);
+}
+
+/** RFC 5987：ASCII 回退文件名 + UTF-8 编码的真实文件名。 */
+function contentDisposition(filename: string): string {
+	const fallback = filename.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+	return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {

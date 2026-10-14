@@ -9,6 +9,7 @@
  */
 import type { TocItem } from "./render";
 import { escapeHtml } from "./render";
+import type { BgPref } from "./prefs";
 
 /** 下发到页面的问答条目（answerHtml 为 null 表示待回复） */
 export interface PageQaEntry {
@@ -37,6 +38,10 @@ export interface PageOptions {
 	prefScale?: number | null;
 	/** User-level persisted line height (1.4–2.2), served from the prefs file; null/undefined = 未设置。 */
 	prefLineHeight?: number | null;
+	/** User-level persisted reading background (white/dim/wood/cyan); null/undefined = 纯白。 */
+	prefBg?: BgPref | null;
+	/** GET endpoint that downloads the raw Markdown source of the current document. */
+	downloadUrl?: string;
 	/** POST endpoint that persists theme/scale changes into the user-level prefs file. */
 	prefsUrl?: string;
 	/** POST endpoint that submits a question about selected text (选中提问). */
@@ -50,8 +55,8 @@ export interface PageOptions {
 const THEME_BOOT = `<script>
 (function () {
 	var d = document.documentElement;
-	var t = null, s = null, lh = null;
-	try { t = localStorage.getItem("mdp.theme"); s = localStorage.getItem("mdp.scale"); lh = localStorage.getItem("mdp.lineHeight"); } catch (e) {}
+	var t = null, s = null, lh = null, b = null;
+	try { t = localStorage.getItem("mdp.theme"); s = localStorage.getItem("mdp.scale"); lh = localStorage.getItem("mdp.lineHeight"); b = localStorage.getItem("mdp.bg"); } catch (e) {}
 	// 主题优先级：本机 localStorage（同端口内最近一次操作）> hint——服务端渲染
 	// 时已把用户级偏好文件合并进 hint（用户偏好 > MD_PREVIEW_THEME 环境变量），
 	// 再往下回退跟随系统。
@@ -74,6 +79,13 @@ const THEME_BOOT = `<script>
 		if (plh > 0) lh = String(plh);
 	}
 	if (lh) d.style.setProperty("--line-height", lh);
+	// 阅读背景优先级同字号：本机 localStorage > 服务端下发的用户级偏好（data-pref-bg），
+	// 两者都没有时回退纯白。
+	if (b !== "white" && b !== "dim" && b !== "wood" && b !== "cyan") {
+		var pb = d.getAttribute("data-pref-bg");
+		b = (pb === "white" || pb === "dim" || pb === "wood" || pb === "cyan") ? pb : "white";
+	}
+	d.dataset.bg = b;
 })();
 </script>`;
 
@@ -134,6 +146,92 @@ const PAGE_CSS = `
 	--shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35);
 	--shadow-2: 0 8px 28px rgba(0, 0, 0, 0.45);
 	--topbar-bg: rgba(14, 17, 22, 0.82);
+}
+
+/* ---------- 阅读背景（data-bg，默认纯白） ----------
+   只覆盖纸面相关的表面色，文字/强调色/阴影沿用所属明暗主题。 */
+
+:root[data-theme="light"][data-bg="white"] {
+	--bg: #ffffff;
+	--bg-elev: #ffffff;
+	--quote-bg: #f7f8fa;
+	--code-bg: #f5f6f9;
+	--code-head: #eef0f4;
+	--inline-code-bg: #f0f2f6;
+	--topbar-bg: rgba(255, 255, 255, 0.85);
+}
+
+:root[data-theme="light"][data-bg="dim"] {
+	--bg: #f4f2ed;
+	--bg-elev: #fbfaf7;
+	--border: #e4e1d9;
+	--border-soft: #eceae4;
+	--quote-bg: #edeae3;
+	--code-bg: #ecebe5;
+	--code-head: #e6e4dc;
+	--inline-code-bg: #e9e7e0;
+	--topbar-bg: rgba(244, 242, 237, 0.85);
+}
+
+:root[data-theme="light"][data-bg="wood"] {
+	--bg: #f4ead8;
+	--bg-elev: #fbf4e6;
+	--border: #e3d6be;
+	--border-soft: #ecdfc9;
+	--quote-bg: #efe3cc;
+	--code-bg: #efe7d4;
+	--code-head: #e8dec7;
+	--inline-code-bg: #ece2cb;
+	--topbar-bg: rgba(244, 234, 216, 0.85);
+}
+
+:root[data-theme="light"][data-bg="cyan"] {
+	--bg: #e3edec;
+	--bg-elev: #f2f7f6;
+	--border: #cfe0de;
+	--border-soft: #dbe8e6;
+	--quote-bg: #dae7e5;
+	--code-bg: #dee9e8;
+	--code-head: #d6e3e1;
+	--inline-code-bg: #d9e5e4;
+	--topbar-bg: rgba(227, 237, 236, 0.85);
+}
+
+/* 深色主题下同一背景偏好的暗色变体（色相随和，亮度保持深色档位） */
+:root[data-theme="dark"][data-bg="dim"] {
+	--bg: #171512;
+	--bg-elev: #1e1c18;
+	--border: #2e2b26;
+	--border-soft: #252220;
+	--quote-bg: #1c1916;
+	--code-bg: #1a1714;
+	--code-head: #211e1a;
+	--inline-code-bg: #211e19;
+	--topbar-bg: rgba(23, 21, 18, 0.85);
+}
+
+:root[data-theme="dark"][data-bg="wood"] {
+	--bg: #1b1510;
+	--bg-elev: #241c14;
+	--border: #33291f;
+	--border-soft: #2a221a;
+	--quote-bg: #211a13;
+	--code-bg: #1f1812;
+	--code-head: #261e16;
+	--inline-code-bg: #261e15;
+	--topbar-bg: rgba(27, 21, 16, 0.85);
+}
+
+:root[data-theme="dark"][data-bg="cyan"] {
+	--bg: #101d1d;
+	--bg-elev: #182828;
+	--border: #284141;
+	--border-soft: #203636;
+	--quote-bg: #162323;
+	--code-bg: #142222;
+	--code-head: #1b2a2a;
+	--inline-code-bg: #1a2929;
+	--topbar-bg: rgba(16, 29, 29, 0.85);
 }
 
 html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
@@ -259,6 +357,38 @@ body {
 :root[data-theme="dark"] .seg button.active { color: #0e1116; }
 .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .seg svg { width: 15px; height: 15px; }
+
+/* 阅读背景色板：圆点即该配方的纸面色 */
+.seg button.bg-swatch { width: 24px; min-width: 24px; padding: 0; }
+.seg button.bg-swatch::after {
+	content: "";
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	background: var(--dot);
+	border: 1px solid rgba(120, 110, 95, 0.55);
+}
+.seg button.bg-swatch:hover { background: var(--accent-soft); }
+.seg button.bg-swatch.active { background: transparent; box-shadow: inset 0 0 0 1.5px var(--accent); }
+
+/* 下载当前文档 */
+.seg a.dl-btn {
+	border: 0;
+	background: transparent;
+	color: var(--text-2);
+	height: 28px;
+	min-width: 30px;
+	padding: 0 8px;
+	border-radius: 7px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	text-decoration: none;
+	transition: background-color 0.18s var(--ease), color 0.18s var(--ease), transform 0.12s var(--ease);
+}
+.seg a.dl-btn:hover { background: var(--accent-soft); color: var(--text); }
+.seg a.dl-btn:active { transform: scale(0.94); }
+.seg a.dl-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 #fontValue {
 	min-width: 42px;
@@ -866,6 +996,35 @@ const PAGE_JS = `
 		else if (mq.addListener) mq.addListener(onScheme);
 	}
 	applyTheme(themePref, false);
+
+	/* ---------- 阅读背景 ---------- */
+
+	var bgPref = root.dataset.bg || "white";
+	function applyBg(pref, persist) {
+		bgPref = pref;
+		root.dataset.bg = pref;
+		if (persist !== false) {
+			try { localStorage.setItem("mdp.bg", pref); } catch (e) {}
+			savePrefs({ bg: pref });
+		}
+		var dots = document.querySelectorAll("[data-bg-set]");
+		for (var i = 0; i < dots.length; i++) {
+			var on = dots[i].getAttribute("data-bg-set") === pref;
+			dots[i].classList.toggle("active", on);
+			dots[i].setAttribute("aria-pressed", on ? "true" : "false");
+		}
+	}
+	document.addEventListener("click", function (e) {
+		var t = e.target;
+		while (t && t !== document) {
+			if (t.getAttribute && t.getAttribute("data-bg-set")) {
+				applyBg(t.getAttribute("data-bg-set"), true);
+				return;
+			}
+			t = t.parentNode;
+		}
+	});
+	applyBg(bgPref, false);
 
 	/* ---------- font size ---------- */
 
@@ -1596,19 +1755,21 @@ function icon(name: string): string {
 		sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"/></svg>',
 		moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.2 8.2 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5z"/></svg>',
 		up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>',
+		download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M6.5 10.5 12 16l5.5-5.5"/><path d="M4.5 19.5h15"/></svg>',
 	};
 	return icons[name] ?? "";
 }
 
 export function renderPage(options: PageOptions): string {
-	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefLineHeight, prefsUrl, askUrl, qa, version } = options;
-	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, qa: qa ?? [] }).replace(/</g, "\\u003c");
+	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefLineHeight, prefBg, downloadUrl, prefsUrl, askUrl, qa, version } = options;
+	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, qa: qa ?? [], downloadUrl: downloadUrl ?? null }).replace(/</g, "\\u003c");
 	const hintAttr = themeHint ? ` data-theme-hint="${escapeHtml(themeHint)}"` : "";
 	const scaleAttr = typeof prefScale === "number" && isFinite(prefScale) ? ` data-pref-scale="${prefScale}"` : "";
 	const lineHeightAttr = typeof prefLineHeight === "number" && isFinite(prefLineHeight) ? ` data-pref-line-height="${prefLineHeight}"` : "";
+	const bgAttr = prefBg ? ` data-pref-bg="${escapeHtml(prefBg)}"` : "";
 
 	return `<!doctype html>
-<html lang="zh-CN"${hintAttr}${scaleAttr}${lineHeightAttr}>
+<html lang="zh-CN"${hintAttr}${scaleAttr}${lineHeightAttr}${bgAttr}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1636,6 +1797,12 @@ ${THEME_BOOT}
 				<button type="button" data-theme-set="light" title="浅色模式" aria-label="浅色模式">${icon("sun")}</button>
 				<button type="button" data-theme-set="dark" title="深色模式" aria-label="深色模式">${icon("moon")}</button>
 			</div>
+			<div class="seg" role="group" aria-label="阅读背景">
+				<button type="button" class="bg-swatch" data-bg-set="white" style="--dot:#ffffff" title="纯白" aria-label="纯白"></button>
+				<button type="button" class="bg-swatch" data-bg-set="dim" style="--dot:#f4f2ed" title="暗白" aria-label="暗白"></button>
+				<button type="button" class="bg-swatch" data-bg-set="wood" style="--dot:#f4ead8" title="木色" aria-label="木色"></button>
+				<button type="button" class="bg-swatch" data-bg-set="cyan" style="--dot:#e3edec" title="青色" aria-label="青色"></button>
+			</div>
 			<div class="seg" role="group" aria-label="字号">
 				<button type="button" id="fontMinus" title="减小字号" aria-label="减小字号">A&minus;</button>
 				<span id="fontValue">100%</span>
@@ -1645,6 +1812,9 @@ ${THEME_BOOT}
 				<button type="button" id="lineHeightMinus" title="减小行距" aria-label="减小行距">&minus;</button>
 				<span id="lineHeightValue">1.75</span>
 				<button type="button" id="lineHeightPlus" title="增大行距" aria-label="增大行距">+</button>
+			</div>
+			<div class="seg">
+				<a class="dl-btn" href="${escapeHtml(downloadUrl ?? "#")}" download title="下载当前文档（Markdown 原文）" aria-label="下载当前文档">${icon("download")}</a>
 			</div>
 		</div>
 	</div>

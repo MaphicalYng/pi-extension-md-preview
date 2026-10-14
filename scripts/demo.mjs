@@ -195,13 +195,19 @@ if (smoke) {
 	if (!prefs0.ok) failures.push(`GET /prefs -> ${prefs0.status}`);
 	else {
 		const body = await prefs0.json();
-		if (body.theme !== null || body.scale !== null || body.lineHeight !== null) failures.push("初始 /prefs 应为空偏好");
+		if (body.theme !== null || body.bg !== null || body.scale !== null || body.lineHeight !== null) failures.push("初始 /prefs 应为空偏好");
 	}
 
 	// 合法值：合并保存。
 	const post1 = await postPrefs({ theme: "dark", scale: 1.25 });
 	if (post1.status !== 200 || post1.body?.theme !== "dark" || post1.body?.scale !== 1.25) {
 		failures.push(`POST /prefs 合法值异常：${post1.status} ${JSON.stringify(post1.body)}`);
+	}
+
+	// 合法背景：只更新 bg，其他键不受影响。
+	const post1c = await postPrefs({ bg: "wood" });
+	if (post1c.status !== 200 || post1c.body?.bg !== "wood" || post1c.body?.theme !== "dark" || post1c.body?.scale !== 1.25) {
+		failures.push(`POST /prefs 背景合法值异常：${post1c.status} ${JSON.stringify(post1c.body)}`);
 	}
 
 	// 合法行距：只更新 lineHeight，其他键不受影响。
@@ -222,7 +228,9 @@ if (smoke) {
 	if (!html2.includes('data-theme-hint="dark"')) failures.push("页面未注入用户级主题");
 	if (!html2.includes('data-pref-scale="1.25"')) failures.push("页面未注入用户级字号");
 	if (!html2.includes('data-pref-line-height="1.9"')) failures.push("页面未注入用户级行距");
+	if (!html2.includes('data-pref-bg="wood"')) failures.push("页面未注入用户级背景");
 	if (!html2.includes('"/prefs"')) failures.push("页面缺少 prefsUrl 端点");
+	if (!html2.includes('/download')) failures.push("页面缺少下载入口");
 
 	// 部分更新保留其他键；越界字号/行距被钳制；非法值被忽略；显式 null 重置。
 	const post2 = await postPrefs({ theme: "light" });
@@ -231,8 +239,8 @@ if (smoke) {
 	if (post3.body?.scale !== 1.6) failures.push(`scale 未钳制到 1.6：${post3.body?.scale}`);
 	const post3b = await postPrefs({ lineHeight: 9.99 });
 	if (post3b.body?.lineHeight !== 2.2) failures.push(`lineHeight 未钳制到 2.2：${post3b.body?.lineHeight}`);
-	const post4 = await postPrefs({ theme: "neon", scale: "huge" });
-	if (post4.body?.theme !== "light" || post4.body?.scale !== 1.6 || post4.body?.lineHeight !== 2.2) failures.push("非法值未被忽略");
+	const post4 = await postPrefs({ theme: "neon", bg: "neon", scale: "huge" });
+	if (post4.body?.theme !== "light" || post4.body?.bg !== "wood" || post4.body?.scale !== 1.6 || post4.body?.lineHeight !== 2.2) failures.push("非法值未被忽略");
 	const post4b = await postPrefs({ lineHeight: "wide" });
 	if (post4b.body?.lineHeight !== 2.2) failures.push("非法行距未被忽略");
 	const post5 = await postPrefs({ theme: null });
@@ -243,7 +251,20 @@ if (smoke) {
 	// GET 校验最终落盘内容（等防抖落盘）。
 	await new Promise((r) => setTimeout(r, 300));
 	const prefsFinal = await (await fetch(prefsEndpoint)).json();
-	if (prefsFinal.theme !== null || prefsFinal.scale !== 1.6 || prefsFinal.lineHeight !== null) failures.push(`落盘偏好异常：${JSON.stringify(prefsFinal)}`);
+	if (prefsFinal.theme !== null || prefsFinal.bg !== "wood" || prefsFinal.scale !== 1.6 || prefsFinal.lineHeight !== null) failures.push(`落盘偏好异常：${JSON.stringify(prefsFinal)}`);
+
+	// ---------- 下载当前文档 ----------
+	const dl = await fetch(`${handle.url}/download`);
+	if (dl.status !== 200) failures.push(`GET /download -> ${dl.status}`);
+	const cd = dl.headers.get("content-disposition") || "";
+	if (!cd.includes("attachment")) failures.push("下载缺少 attachment 头");
+	if (!cd.includes("sample-report.md")) failures.push(`下载文件名异常：${cd}`);
+	const dlText = await dl.text();
+	if (dlText !== SAMPLE_REPORT) failures.push("下载内容与源文件不一致");
+
+	// 不存在的文档下载应 404。
+	const dl404 = await fetch(`http://127.0.0.1:${server.port}/doc/nope/download`);
+	if (dl404.status !== 404) failures.push(`未知文档下载 -> ${dl404.status}`);
 
 	// ---------- 选中提问（ask → SSE → answer） ----------
 	const askBody = { quote: "核心链路平均延迟下降", question: "下降的主要原因是什么？" };
