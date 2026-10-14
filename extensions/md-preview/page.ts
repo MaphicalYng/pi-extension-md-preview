@@ -638,14 +638,14 @@ body {
 	border-radius: 12px;
 	padding: 12px 14px;
 	box-shadow: var(--shadow-1);
-	font-size: 0.78rem;
+	font-size: 0.875em;
 	line-height: 1.6;
 	pointer-events: auto;
 }
 .qa-card.pending { border-style: dashed; box-shadow: none; }
 .qa-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
-.qa-badge { font-size: 0.68rem; font-weight: 650; color: var(--accent); background: var(--accent-soft); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
-.qa-time { font-size: 0.68rem; color: var(--text-3); white-space: nowrap; }
+.qa-badge { font-size: 0.75rem; font-weight: 650; color: var(--accent); background: var(--accent-soft); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.qa-time { font-size: 0.75rem; color: var(--text-3); white-space: nowrap; }
 .qa-label { font-weight: 650; margin-right: 4px; }
 .qa-quote {
 	border-left: 3px solid #e88911;
