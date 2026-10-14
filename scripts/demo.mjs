@@ -162,6 +162,10 @@ if (smoke) {
 	if (!mermaidProbe.html.includes('<pre class="mermaid">')) failures.push("mermaid 代码块未渲染为裸 pre 占位");
 	if (mermaidProbe.html.includes("code-block")) failures.push("mermaid 代码块不应包含 code-block 结构");
 
+	// 导出 HTML：工具栏按钮 + 离线运行时（EXPORT_JS）已注入页面脚本。
+	if (!html.includes('id="exportBtn"')) failures.push("页面缺少导出按钮");
+	if (!html.includes("离线导出")) failures.push("页面未注入导出运行时标记（离线导出）");
+
 	const index = await fetch(`http://127.0.0.1:${server.port}/`);
 	if (!index.ok) failures.push(`GET / -> ${index.status}`);
 

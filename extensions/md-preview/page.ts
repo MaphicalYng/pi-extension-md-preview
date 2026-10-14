@@ -371,8 +371,8 @@ body {
 .seg button.bg-swatch:hover { background: var(--accent-soft); }
 .seg button.bg-swatch.active { background: transparent; box-shadow: inset 0 0 0 1.5px var(--accent); }
 
-/* 下载当前文档 */
-.seg a.dl-btn {
+/* 下载当前文档 / 导出 HTML：同组内的图标按钮，<a> 与 <button> 共用样式 */
+.seg .dl-btn {
 	border: 0;
 	background: transparent;
 	color: var(--text-2);
@@ -386,9 +386,11 @@ body {
 	text-decoration: none;
 	transition: background-color 0.18s var(--ease), color 0.18s var(--ease), transform 0.12s var(--ease);
 }
-.seg a.dl-btn:hover { background: var(--accent-soft); color: var(--text); }
-.seg a.dl-btn:active { transform: scale(0.94); }
-.seg a.dl-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.seg button.dl-btn { font: inherit; cursor: pointer; }
+.seg .dl-btn:hover { background: var(--accent-soft); color: var(--text); }
+.seg .dl-btn:active { transform: scale(0.94); }
+.seg .dl-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dl-btn.busy { opacity: 0.5; pointer-events: none; }
 
 #fontValue {
 	min-width: 42px;
@@ -916,6 +918,174 @@ body {
 	.layout { display: block; padding: 0; }
 	.code-block { break-inside: avoid; }
 }
+`;
+
+/**
+ * 导出文件的离线运行时：导出时作为独立 <script> 注入克隆，接管主题/背景/字号/行距、
+ * 代码复制与回到顶部，使导出件看起来与导出瞬间的预览页一致。
+ *
+ * 硬约束（见 docs/web-export-plan.md §5 R1/R8）：内部不写反引号、不写 ${}、不写正则转义，
+ * 也绝不出现 `</script>` 序列；在 PAGE_JS 里经 JSON.stringify + \u003c 替换注入。
+ * 刻意不写 localStorage、不发任何网络请求——离线打开导出件不得污染在线预览的用户偏好。
+ */
+const EXPORT_JS = `
+(function () {
+	"use strict";
+	var root = document.documentElement;
+	var toastEl = document.getElementById("toast");
+	var toastTimer = null;
+	function toast(msg) {
+		if (!toastEl) return;
+		toastEl.textContent = msg;
+		toastEl.classList.add("show");
+		if (toastTimer) clearTimeout(toastTimer);
+		toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 1800);
+	}
+
+	/* ---------- 离线快照徽标 ----------
+	   静态 HTML 在导出时已写入「离线导出 · 时间」（无 JS 也正确）；
+	   这里按冻结的导出时间再写一次，作为导出件身份标识并可修正 locale 差异。 */
+
+	function snapshotTime() {
+		var at = parseInt(root.getAttribute("data-exported-at") || "", 10);
+		var t = new Date(isFinite(at) && at > 0 ? at : Date.now());
+		try { return t.toLocaleString("zh-CN", { hour12: false }); } catch (e) { return t.toString(); }
+	}
+	var pillText = document.querySelector("#livePill .live-text");
+	if (pillText) pillText.textContent = "离线导出 · " + snapshotTime();
+
+	/* ---------- 主题 / 阅读背景：只改 DOM 与 CSS 变量 ---------- */
+
+	function markActive(attr, value) {
+		var btns = document.querySelectorAll("[" + attr + "]");
+		for (var i = 0; i < btns.length; i++) {
+			var on = btns[i].getAttribute(attr) === value;
+			btns[i].classList.toggle("active", on);
+			btns[i].setAttribute("aria-pressed", on ? "true" : "false");
+		}
+	}
+	function resolveTheme(pref) {
+		if (pref === "light" || pref === "dark") return pref;
+		return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+	}
+	function applyTheme(pref) {
+		root.setAttribute("data-theme-pref", pref);
+		root.setAttribute("data-theme", resolveTheme(pref));
+		markActive("data-theme-set", pref);
+		// 导出件不含 mermaid 运行时：切主题后 SVG 配色保持快照时刻（已知限制）
+		if (document.querySelector(".mermaid-rendered svg")) toast("图表配色保持导出时的主题");
+	}
+	function applyBg(pref) {
+		root.setAttribute("data-bg", pref);
+		markActive("data-bg-set", pref);
+	}
+	document.addEventListener("click", function (e) {
+		var t = e.target;
+		while (t && t !== document) {
+			if (t.getAttribute) {
+				if (t.getAttribute("data-theme-set")) { applyTheme(t.getAttribute("data-theme-set")); return; }
+				if (t.getAttribute("data-bg-set")) { applyBg(t.getAttribute("data-bg-set")); return; }
+			}
+			t = t.parentNode;
+		}
+	});
+	// 冻结值同步按钮态：导出件打开时高亮当前主题/背景（导出时已固化为具体亮/暗值）
+	markActive("data-theme-set", root.getAttribute("data-theme-pref") || "system");
+	markActive("data-bg-set", root.getAttribute("data-bg") || "white");
+
+	/* ---------- 字号 / 行距（钳制语义与在线版一致） ---------- */
+
+	var scale = parseFloat(root.style.getPropertyValue("--font-scale") || "");
+	if (!isFinite(scale) || scale <= 0) scale = 1;
+	var fontValue = document.getElementById("fontValue");
+	function setScale(v) {
+		scale = Math.min(1.6, Math.max(0.7, Math.round(v * 100) / 100));
+		root.style.setProperty("--font-scale", String(scale));
+		if (fontValue) fontValue.textContent = Math.round(scale * 100) + "%";
+	}
+	var LINE_MIN = 1.4, LINE_MAX = 2.2, LINE_STEP = 0.15, LINE_DEFAULT = 1.75;
+	var lineHeight = parseFloat(root.style.getPropertyValue("--line-height") || "");
+	if (!isFinite(lineHeight) || lineHeight <= 0) lineHeight = LINE_DEFAULT;
+	var lineHeightValue = document.getElementById("lineHeightValue");
+	function setLineHeight(v) {
+		lineHeight = Math.min(LINE_MAX, Math.max(LINE_MIN, Math.round(v * 100) / 100));
+		root.style.setProperty("--line-height", String(lineHeight));
+		if (lineHeightValue) lineHeightValue.textContent = lineHeight.toFixed(2);
+	}
+	var fontMinus = document.getElementById("fontMinus");
+	var fontPlus = document.getElementById("fontPlus");
+	var lineMinus = document.getElementById("lineHeightMinus");
+	var linePlus = document.getElementById("lineHeightPlus");
+	if (fontMinus) fontMinus.addEventListener("click", function () { setScale(scale - 0.1); });
+	if (fontPlus) fontPlus.addEventListener("click", function () { setScale(scale + 0.1); });
+	if (fontValue) {
+		fontValue.addEventListener("click", function () { setScale(1); });
+		fontValue.style.cursor = "pointer";
+		fontValue.title = "点击恢复默认";
+	}
+	if (lineMinus) lineMinus.addEventListener("click", function () { setLineHeight(lineHeight - LINE_STEP); });
+	if (linePlus) linePlus.addEventListener("click", function () { setLineHeight(lineHeight + LINE_STEP); });
+	if (lineHeightValue) {
+		lineHeightValue.addEventListener("click", function () { setLineHeight(LINE_DEFAULT); });
+		lineHeightValue.style.cursor = "pointer";
+		lineHeightValue.title = "点击恢复默认";
+	}
+
+	/* ---------- 代码复制（file:// 下 clipboard API 可能被拒 → execCommand 兜底） ---------- */
+
+	function legacyCopy(text) {
+		var ta = document.createElement("textarea");
+		ta.value = text;
+		ta.setAttribute("readonly", "readonly");
+		ta.style.position = "fixed";
+		ta.style.top = "-1000px";
+		ta.style.opacity = "0";
+		document.body.appendChild(ta);
+		ta.select();
+		var ok = false;
+		try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+		document.body.removeChild(ta);
+		return ok;
+	}
+	function onCopy(e) {
+		var btn = e.currentTarget;
+		var block = btn.closest ? btn.closest(".code-block") : null;
+		var pre = block ? block.querySelector("pre") : null;
+		if (!pre) return;
+		var text = pre.innerText;
+		var done = function () {
+			btn.textContent = "已复制";
+			btn.classList.add("done");
+			toast("代码已复制到剪贴板");
+			setTimeout(function () { btn.textContent = "复制"; btn.classList.remove("done"); }, 1600);
+		};
+		var failed = function () { toast("复制失败"); };
+		if (navigator.clipboard && navigator.clipboard.writeText) {
+			navigator.clipboard.writeText(text).then(done, function () {
+				if (legacyCopy(text)) done(); else failed();
+			});
+		} else if (legacyCopy(text)) {
+			done();
+		} else {
+			failed();
+		}
+	}
+	var copyBtns = document.querySelectorAll(".copy-btn");
+	for (var ci = 0; ci < copyBtns.length; ci++) copyBtns[ci].addEventListener("click", onCopy);
+
+	/* ---------- 回到顶部 + 吸顶阴影（不做 scroll-spy，静态快照语义） ---------- */
+
+	var toTop = document.getElementById("toTop");
+	var topbar = document.getElementById("topbar");
+	if (toTop) toTop.addEventListener("click", function () { window.scrollTo(0, 0); });
+	function onScroll() {
+		var y = window.pageYOffset || root.scrollTop || 0;
+		if (toTop) toTop.classList.toggle("show", y > 600);
+		if (topbar) topbar.classList.toggle("scrolled", y > 8);
+	}
+	window.addEventListener("scroll", onScroll, { passive: true });
+	onScroll();
+})();
 `;
 
 const PAGE_JS = `
@@ -1733,6 +1903,172 @@ const PAGE_JS = `
 		}
 	}
 
+	/* ---------- 导出 HTML（离线快照：克隆 → 净化 → 冻结 → 内联图片 → 下载） ---------- */
+
+	var EXPORT_RUNTIME = ${JSON.stringify(EXPORT_JS).replace(/</g, "\\u003c")};
+
+	function removeInClone(clone, ids) {
+		for (var i = 0; i < ids.length; i++) {
+			var el = clone.querySelector("#" + ids[i]);
+			if (el && el.parentNode) el.parentNode.removeChild(el);
+		}
+	}
+
+	// R7：顶栏副标题是源文件绝对路径（server 传 doc.filePath），分享导出件前只留文件名
+	function baseName(p) {
+		var normalized = String(p || "").split(String.fromCharCode(92)).join("/");
+		var parts = normalized.split("/");
+		while (parts.length > 1 && !parts[parts.length - 1]) parts.pop();
+		return parts.length ? parts[parts.length - 1] : normalized;
+	}
+
+	// 文件名净化：逐字符过滤（不在模板字符串里写正则），非法字符折叠为单个「-」
+	function exportFileName() {
+		var titleEl = document.getElementById("docTitle");
+		var raw = titleEl ? String(titleEl.textContent || "") : "";
+		var out = "";
+		var lastDash = false;
+		for (var i = 0; i < raw.length && out.length < 60; i++) {
+			var ch = raw.charAt(i);
+			var code = raw.charCodeAt(i);
+			var bad = code < 32 || code === 127 || code === 92 || ch === "/" || ch === ":" ||
+				ch === "*" || ch === "?" || ch === '"' || ch === "<" || ch === ">" || ch === "|";
+			if (bad || ch === " " || ch === "-") {
+				if (lastDash || !out.length) continue;
+				out += "-";
+				lastDash = true;
+				continue;
+			}
+			out += ch;
+			lastDash = false;
+		}
+		while (out.length && (out.charAt(out.length - 1) === "-" || out.charAt(out.length - 1) === ".")) out = out.slice(0, -1);
+		if (!out) out = "document";
+		var d = new Date();
+		var pad = function (n) { return (n < 10 ? "0" : "") + n; };
+		return "md-preview-" + out + "-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + pad(d.getHours()) + pad(d.getMinutes()) + ".html";
+	}
+
+	// mermaid 可能仍在动态 import + render：最多等 3s，超时照常导出（源码可见）并返回超时标记
+	function waitForMermaid() {
+		return new Promise(function (resolve) {
+			var deadline = Date.now() + 3000;
+			var check = function () {
+				var loading = document.querySelectorAll('pre.mermaid[data-status="loading"]');
+				if (!loading.length) { resolve(false); return; }
+				if (Date.now() >= deadline) { resolve(true); return; }
+				setTimeout(check, 150);
+			};
+			check();
+		});
+	}
+
+	function imageToDataUrl(src) {
+		return fetch(src, { credentials: "same-origin" }).then(function (res) {
+			if (!res.ok) throw new Error("http " + res.status);
+			return res.blob();
+		}).then(function (blob) {
+			return new Promise(function (resolve, reject) {
+				var reader = new FileReader();
+				reader.onload = function () { resolve(String(reader.result || "")); };
+				reader.onerror = function () { reject(reader.error || new Error("read failed")); };
+				reader.readAsDataURL(blob);
+			});
+		});
+	}
+
+	// 同源 /asset/<token> 图片内联为 data URL；data:/http(s): 跳过；失败保留原 src，不阻塞导出
+	function inlineImages(clone) {
+		var imgs = clone.querySelectorAll("img[src]");
+		var jobs = [];
+		for (var i = 0; i < imgs.length; i++) {
+			var src = imgs[i].getAttribute("src") || "";
+			if (!src || src.slice(0, 5) === "data:" || src.slice(0, 5) === "http:" || src.slice(0, 6) === "https:") continue;
+			(function (el, s) {
+				jobs.push(imageToDataUrl(s).then(function (dataUrl) {
+					if (dataUrl) el.setAttribute("src", dataUrl);
+				}, function () { /* 内联失败：保留原 src，离线可能不显示 */ }));
+			})(imgs[i], src);
+		}
+		return Promise.all(jobs);
+	}
+
+	function buildExportDocument() {
+		var clone = document.documentElement.cloneNode(true);
+
+		/* 1) 冻结外观状态为具体值（导出件不再跟随系统/偏好漂移） */
+		var theme = root.dataset.theme === "dark" ? "dark" : "light";
+		clone.setAttribute("data-theme", theme);
+		clone.setAttribute("data-theme-pref", theme);
+		clone.removeAttribute("data-theme-hint");
+		clone.removeAttribute("data-pref-scale");
+		clone.removeAttribute("data-pref-line-height");
+		clone.removeAttribute("data-pref-bg");
+		clone.style.setProperty("--font-scale", String(scale));
+		clone.style.setProperty("--line-height", String(lineHeight));
+
+		/* 2) 剥离脚本与在线交互（离线必然失败或语义错误的入口） */
+		var scripts = clone.querySelectorAll("script");
+		for (var i = 0; i < scripts.length; i++) scripts[i].parentNode.removeChild(scripts[i]);
+		removeInClone(clone, ["exportBtn", "downloadBtn", "qaSelBtn", "askPanel"]);
+		var prog = clone.querySelector(".progress");
+		if (prog && prog.parentNode) prog.parentNode.removeChild(prog);
+		var exportedAt = Date.now();
+		clone.setAttribute("data-exported-at", String(exportedAt));
+		var pill = clone.querySelector("#livePill");
+		if (pill) {
+			pill.innerHTML = '<span class="live-dot"></span><span class="live-text">离线导出 · ' + esc(fmtTime(exportedAt)) + "</span>";
+		}
+		var sub = clone.querySelector(".doc-sub");
+		if (sub) sub.textContent = baseName(sub.textContent);
+
+		/* 3) QA：已完成卡片原样保留；等待中 → 静态标注（保留虚线边框，去掉脉冲） */
+		var waiting = clone.querySelectorAll(".qa-card.pending .qa-wait");
+		for (var j = 0; j < waiting.length; j++) waiting[j].textContent = "⏳ 导出时该提问尚未回复";
+		var rail = clone.querySelector("#qaRail");
+		if (rail && !rail.querySelector(".qa-card")) {
+			if (rail.parentNode) rail.parentNode.removeChild(rail);
+			var layoutClone = clone.querySelector("#layout");
+			if (layoutClone) layoutClone.classList.remove("with-qa");
+		}
+
+		/* 4) 注入离线运行时（主题/背景/字号/行距/复制/回到顶部） */
+		var runtime = document.createElement("script");
+		runtime.textContent = EXPORT_RUNTIME;
+		clone.querySelector("body").appendChild(runtime);
+
+		/* 5) 图片内联 + 等 mermaid 渲染收尾，然后序列化为单文件 HTML */
+		return Promise.all([waitForMermaid(), inlineImages(clone)]).then(function (r) {
+			return { html: "<!doctype html>\\n" + clone.outerHTML, partial: !!r[0] };
+		});
+	}
+
+	function exportHtml() {
+		var btn = document.getElementById("exportBtn");
+		if (btn) { btn.disabled = true; btn.classList.add("busy"); }
+		toast("正在生成导出文件…");
+		buildExportDocument().then(function (res) {
+			var blob = new Blob([res.html], { type: "text/html;charset=utf-8" });
+			var url = URL.createObjectURL(blob);
+			var a = document.createElement("a");
+			a.href = url;
+			a.download = exportFileName();
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+			toast(res.partial ? "部分图表仍在渲染中，已导出源码" : "已导出 HTML");
+		}).catch(function (e) {
+			console.warn("[md-preview] 导出失败：", e);
+			toast("导出失败，请重试");
+		}).then(function () {
+			if (btn) { btn.disabled = false; btn.classList.remove("busy"); }
+		});
+	}
+
+	var exportBtnEl = document.getElementById("exportBtn");
+	if (exportBtnEl) exportBtnEl.addEventListener("click", exportHtml);
+
 	/* ---------- boot ---------- */
 
 	setScale(scale);
@@ -1756,6 +2092,7 @@ function icon(name: string): string {
 		moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.2 8.2 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5z"/></svg>',
 		up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>',
 		download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M6.5 10.5 12 16l5.5-5.5"/><path d="M4.5 19.5h15"/></svg>',
+		export: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 3.5H6.5A1.5 1.5 0 0 0 5 5v14a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 19V9z"/><path d="M13.5 3.5V9H19"/><path d="M12 17v-6"/><path d="M9.5 13.5 12 11l2.5 2.5"/></svg>',
 	};
 	return icons[name] ?? "";
 }
@@ -1813,8 +2150,9 @@ ${THEME_BOOT}
 				<span id="lineHeightValue">1.75</span>
 				<button type="button" id="lineHeightPlus" title="增大行距" aria-label="增大行距">+</button>
 			</div>
-			<div class="seg">
-				<a class="dl-btn" href="${escapeHtml(downloadUrl ?? "#")}" download title="下载当前文档（Markdown 原文）" aria-label="下载当前文档">${icon("download")}</a>
+			<div class="seg" role="group" aria-label="文档操作">
+				<a class="dl-btn" id="downloadBtn" href="${escapeHtml(downloadUrl ?? "#")}" download title="下载当前文档（Markdown 原文）" aria-label="下载当前文档">${icon("download")}</a>
+				<button type="button" class="dl-btn" id="exportBtn" title="导出 HTML（含 Agent 回复，可离线打开）" aria-label="导出 HTML">${icon("export")}</button>
 			</div>
 		</div>
 	</div>
