@@ -1,10 +1,30 @@
 {
-	"name": "pi-extension-md-preview",
+	"name": "pi-md-preview",
 	"version": "0.1.0",
 	"description": "Pi extension: render Markdown files as polished web pages with an auto-exiting preview server",
 	"type": "module",
 	"keywords": ["pi-package", "markdown", "preview", "report"],
 	"license": "MIT",
+	"author": "MaphicalYng",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/MaphicalYng/pi-extension-md-preview.git"
+	},
+	"homepage": "https://github.com/MaphicalYng/pi-extension-md-preview#readme",
+	"bugs": {
+		"url": "https://github.com/MaphicalYng/pi-extension-md-preview/issues"
+	},
+	"files": [
+		"extensions",
+		"README.md",
+		"README.zh-CN.md",
+		"LICENSE",
+		"NOTICE"
+	],
+	"publishConfig": {
+		"registry": "https://registry.npmjs.org/",
+		"access": "public"
+	},
 	"pi": {
 		"extensions": ["./extensions/md-preview/index.ts"]
 	},
@@ -24,6 +44,7 @@
 	"scripts": {
 		"check": "node scripts/check.mjs",
 		"check:i18n": "node scripts/i18n-check.mjs && node scripts/page-i18n-check.mjs",
+		"prepublishOnly": "npm run check && npm run check:i18n",
 		"demo": "node scripts/demo.mjs",
 		"vendor:mermaid": "node scripts/vendor-mermaid.mjs"
 	}

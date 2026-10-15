@@ -1,4 +1,4 @@
-# pi-extension-md-preview
+# pi-md-preview
 
 English | [简体中文](README.zh-CN.md)
 
@@ -27,16 +27,30 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 
 ## Quick start
 
-### Install as a local package (recommended)
+### Install from npm
 
 ```bash
-pi install /Users/maphicalyng/code/mk_projects/pi-extension-md-preview
+pi install npm:pi-md-preview@0.1.0
 ```
 
-Restart your Pi session after installing. For development, you can load it temporarily without installing:
+Restart your Pi session after installing. To try it for one invocation without installing:
 
 ```bash
-pi --extension /Users/maphicalyng/code/mk_projects/pi-extension-md-preview/extensions/md-preview/index.ts
+pi -e npm:pi-md-preview
+```
+
+### Install a local checkout (development)
+
+From a clone of this repository:
+
+```bash
+pi install ./pi-extension-md-preview
+```
+
+Or load it temporarily without installing:
+
+```bash
+pi --extension ./extensions/md-preview/index.ts
 ```
 
 ### In a session
@@ -184,3 +198,7 @@ npm run check               # strict TypeScript check (run after every change)
 npm run check:i18n          # bilingual string-table + language-channel assertions
 npm run demo -- --smoke     # end-to-end smoke: render + server + SSE
 ```
+
+## License
+
+MIT. This package vendors a self-contained [Mermaid](https://github.com/mermaid-js/mermaid) build (`extensions/md-preview/vendor/mermaid.esm.min.mjs`, MIT License) served lazily from the preview server's own origin — see `NOTICE`.

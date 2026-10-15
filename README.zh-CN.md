@@ -1,4 +1,4 @@
-# pi-extension-md-preview
+# pi-md-preview
 
 [English](README.md) | 简体中文
 
@@ -27,16 +27,30 @@
 
 ## 快速开始
 
-### 以本地包安装（推荐）
+### 从 npm 安装
 
 ```bash
-pi install /Users/maphicalyng/code/mk_projects/pi-extension-md-preview
+pi install npm:pi-md-preview@0.1.0
 ```
 
-安装后重启 pi 会话即可。开发调试时可临时加载而不安装：
+安装后重启 pi 会话即可。只想临时试用一次、不写入 settings：
 
 ```bash
-pi --extension /Users/maphicalyng/code/mk_projects/pi-extension-md-preview/extensions/md-preview/index.ts
+pi -e npm:pi-md-preview
+```
+
+### 以本地包安装（开发调试）
+
+clone 本仓库后：
+
+```bash
+pi install ./pi-extension-md-preview
+```
+
+或临时加载而不安装：
+
+```bash
+pi --extension ./extensions/md-preview/index.ts
 ```
 
 ### 在会话中使用
@@ -184,3 +198,7 @@ npm run check               # 严格 TypeScript 检查（推荐每次改动后�
 npm run check:i18n          # 双语文案表 + 语言通道断言
 npm run demo -- --smoke     # 端到端冒烟：渲染 + 服务 + SSE
 ```
+
+## 许可证
+
+MIT。本包内含一份自包含的 [Mermaid](https://github.com/mermaid-js/mermaid) 构建产物（`extensions/md-preview/vendor/mermaid.esm.min.mjs`，MIT 许可），由预览服务器同源懒加载——详见 `NOTICE`。

@@ -1,6 +1,6 @@
 # md-preview 插件测试报告
 
-> 本文件是 `pi-extension-md-preview` 的**渲染测试样例**，覆盖插件声明支持的全部 Markdown 特性。
+> 本文件是 `pi-md-preview` 的**渲染测试样例**，覆盖插件声明支持的全部 Markdown 特性。
 > 用于验证：页面排版、目录导航、代码高亮与复制、表格、提示框、任务列表、图片/链接路由、实时刷新等。
 
 ## 测试清单速览
@@ -107,7 +107,7 @@ print(f"P99 变化: {Metric('p99', 840, 580).delta:.0%}")  # -31%
 
 ```bash
 # 安装并临时加载本插件
-pi install /Users/maphicalyng/code/mk_projects/pi-extension-md-preview
+pi install npm:pi-md-preview@0.1.0   # 或本地: pi install ./
 pi --extension extensions/md-preview/index.ts
 ```
 

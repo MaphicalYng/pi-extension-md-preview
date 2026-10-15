@@ -89,7 +89,7 @@ function findExtensionRoot(startDir: string): string | null {
 	for (let i = 0; i < 6; i++) {
 		try {
 			const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")) as { name?: string };
-			if (pkg.name === "pi-extension-md-preview") return dir;
+			if (pkg.name === "pi-md-preview") return dir;
 		} catch {
 			/* keep walking up */
 		}
