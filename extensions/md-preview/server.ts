@@ -65,6 +65,12 @@ export interface QaEntry {
 	question: string;
 	/** True for chat messages typed in the box at the bottom of the page (quote is then empty). */
 	chat?: boolean;
+	/**
+	 * The user's chat message rendered as HTML on the server (same pipeline as answerHtml: raw HTML
+	 * in it is escaped). Only chat entries get one. `question` keeps the original Markdown verbatim
+	 * and stays the source of truth for the pi session context.
+	 */
+	questionHtml?: string;
 	/** Agent reply as server-rendered HTML (raw HTML in the reply is rendered as escaped text). */
 	answerHtml?: string;
 	/** Raw Markdown of the agent reply: only used to summarize chat context, never sent to the page. */
@@ -79,6 +85,8 @@ export interface QaPayload {
 	quote: string;
 	question: string;
 	chat: boolean;
+	/** Server-rendered HTML of the user's message (chat entries only); null for selected-text questions. */
+	questionHtml: string | null;
 	answerHtml: string | null;
 	askedAt: number;
 	answeredAt: number | null;
@@ -432,6 +440,7 @@ export class PreviewServer {
 			quote: e.quote,
 			question: e.question,
 			chat: e.chat === true,
+			questionHtml: e.questionHtml ?? null,
 			answerHtml: e.answerHtml ?? null,
 			askedAt: e.askedAt,
 			answeredAt: e.answeredAt ?? null,
@@ -468,6 +477,9 @@ export class PreviewServer {
 	/** The preview page chat box submitted a message: persist it, broadcast the SSE ask event (chat: true), and let the extension inject it into the pi session. */
 	chat(doc: DocState, message: string): QaEntry {
 		const entry: QaEntry = { id: `q${++this.qaSeq}`, docId: doc.id, quote: "", question: message, chat: true, askedAt: Date.now() };
+		// Render the user's message with the same pipeline as the agent reply so the page can show it
+		// as Markdown; assigned before the broadcast, so the SSE ask frame already carries it.
+		entry.questionHtml = renderMarkdown(message).html;
 		this.qa.set(entry.id, entry);
 		this.trimChat(doc.id);
 		// Same reason as ask(): make the `v` of already-open EventSource links stale, so a reconnect after a
@@ -689,7 +701,9 @@ export class PreviewServer {
 		}
 		const entry = this.chat(doc, message);
 		res.statusCode = 200;
-		res.end(JSON.stringify({ id: entry.id, askedAt: entry.askedAt }));
+		// Full payload (a superset of the old { id, askedAt }) so the POST response can render the
+		// question as Markdown without waiting for the SSE echo.
+		res.end(JSON.stringify(this.qaPayload(entry)));
 	}
 
 	private serveEvents(req: http.IncomingMessage, res: http.ServerResponse, doc: DocState, url: URL): void {

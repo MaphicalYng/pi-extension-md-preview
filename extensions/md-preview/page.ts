@@ -996,31 +996,47 @@ body {
 .chat-title { font-weight: 650; font-size: 0.95rem; }
 .chat-list { display: flex; flex-direction: column; gap: 16px; }
 .chat-empty { color: var(--text-3); font-size: 0.86rem; text-align: center; padding: 14px 8px; }
-.chat-turn { display: flex; flex-direction: column; gap: 6px; }
-.chat-row { display: flex; flex-direction: column; gap: 3px; max-width: 88%; }
-.chat-row.you { align-self: flex-end; align-items: flex-end; }
-.chat-row.agent { align-self: flex-start; align-items: flex-start; }
-.chat-meta { display: flex; align-items: baseline; gap: 6px; font-size: 0.72rem; color: var(--text-3); }
-.chat-who { font-weight: 650; }
-.chat-bubble { border-radius: 12px; padding: 8px 12px; word-break: break-word; }
-.chat-bubble.you {
-	background: var(--accent);
-	color: #fff;
-	white-space: pre-wrap;
+/* Reversed timeline: the list reads newest first, every turn keeps its own anchor. */
+.chat-turn { display: flex; flex-direction: column; gap: 8px; }
+/* Alternating rows instead of bubbles: a role chip plus a full-width tinted row
+   (accent left bar for the reader, neutral bar for the agent) tells the sides apart. */
+.chat-row {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+	width: 100%;
+	padding: 10px 14px;
+	border-radius: 10px;
+	border-left: 3px solid transparent;
 }
+.chat-row.you { background: var(--accent-soft); border-left-color: var(--accent); }
+.chat-row.agent { background: var(--code-bg); border-left-color: var(--text-3); }
+.chat-meta { display: flex; align-items: baseline; gap: 8px; font-size: 0.72rem; color: var(--text-3); }
+.chat-role {
+	display: inline-block;
+	font-size: 0.72rem;
+	font-weight: 650;
+	line-height: 1.6;
+	padding: 0 9px;
+	border-radius: 999px;
+}
+.chat-role.you { background: var(--accent); color: #fff; }
 /* Mirror the existing .seg button.active handling: dark theme keeps the fill and darkens the text. */
-:root[data-theme="dark"] .chat-bubble.you { color: #0e1116; }
-/* The agent bubble also carries the .content class, so the article's typography
-   (headings, lists, quotes, inline code, .code-block, tables, mermaid) applies
-   inside the bubble without copying any of it. */
-.chat-bubble.agent {
-	background: var(--code-bg);
-	border: 1px solid var(--border-soft);
-	font-size: 0.93em;
-}
-.chat-bubble.agent > :first-child { margin-top: 0.2em; }
-.chat-bubble.agent > :last-child { margin-bottom: 0.2em; }
-.chat-input { margin-top: 14px; display: flex; gap: 8px; align-items: flex-end; }
+:root[data-theme="dark"] .chat-role.you { color: #0e1116; }
+.chat-role.agent { background: var(--bg-elev); color: var(--text-2); border: 1px solid var(--border-soft); }
+/* The body carries the .content class for rendered Markdown, so the article's typography
+   (headings, lists, quotes, inline code, .code-block, tables, mermaid) applies there
+   without copying any of it. */
+.chat-body { font-size: 0.93em; word-break: break-word; }
+.chat-body > :first-child { margin-top: 0.2em; }
+.chat-body > :last-child { margin-bottom: 0.2em; }
+/* Plain-text fallback when the server sent no questionHtml; keeps the old bubble line breaks. */
+.chat-plain { white-space: pre-wrap; }
+/* Rendered headings inside a row show no article anchor icon. */
+.chat-body .heading-anchor { display: none; }
+/* block:"start" scrolls this area's top edge into view; keep it clear of the sticky topbar. */
+.chat { scroll-margin-top: calc(var(--topbar-h) + 16px); }
+.chat-input { margin-bottom: 14px; display: flex; gap: 8px; align-items: flex-end; }
 .chat-input textarea {
 	flex: 1;
 	resize: vertical;
@@ -1065,7 +1081,6 @@ body {
 	.heading-anchor { display: none; }
 	.to-top { right: 16px; bottom: 16px; }
 	.chat { padding: 14px; }
-	.chat-row { max-width: 94%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1935,7 +1950,6 @@ const PAGE_JS = `
 					chatState[d.id].answeredAt = d.answeredAt;
 					refreshChat(d.id);
 					toast(T.qaAnsweredToast);
-					chatScrollBottom(false);
 					return;
 				}
 				var entry = qaState[d.id];
@@ -2264,25 +2278,32 @@ const PAGE_JS = `
 	var chatEmpty = document.getElementById("chatEmpty");
 	var chatText = document.getElementById("chatText");
 	var chatSend = document.getElementById("chatSend");
-	var chatState = {};   // id -> entry; DOM order is the conversation order, so no extra order array
+	var chatState = {};   // id -> entry; the DOM lists turns newest-first, so ordering uses askedAt
 
-	// One turn = the user row plus the agent row. Every dynamic string goes through esc().
+	// One turn = the user row plus the agent row, drawn as two full-width alternating rows.
+	// Every dynamic string except the pre-rendered *Html fields goes through esc().
 	function chatTurnInnerHtml(entry) {
 		var answered = !!entry.answerHtml;
 		var askedAt = entry.askedAt ? fmtTime(entry.askedAt) : "";
 		var answeredAt = answered && entry.answeredAt ? fmtTime(entry.answeredAt) : "";
+		// questionHtml is rendered server-side by the same pipeline as answerHtml (raw HTML escaped).
+		// esc(question) is the fallback for an older server or a frame that raced ahead of the render.
+		var questionBody = entry.questionHtml
+			? '<div class="chat-body content">' + entry.questionHtml + "</div>"
+			: '<div class="chat-body chat-plain">' + esc(entry.question) + "</div>";
 		return '<div class="chat-row you">'
-			+ '<div class="chat-meta"><span class="chat-who" data-i18n="chatYouLabel">' + esc(T.chatYouLabel) + '</span><span class="chat-time">' + esc(askedAt) + "</span></div>"
-			+ '<div class="chat-bubble you">' + esc(entry.question) + "</div>"
+			+ '<div class="chat-meta"><span class="chat-role you" data-i18n="chatYouLabel">' + esc(T.chatYouLabel) + '</span><span class="chat-time">' + esc(askedAt) + "</span></div>"
+			+ questionBody
 			+ "</div>"
 			+ '<div class="chat-row agent">'
-			+ '<div class="chat-meta"><span class="chat-who" data-i18n="chatAgentLabel">' + esc(T.chatAgentLabel) + '</span><span class="chat-time">' + esc(answeredAt) + "</span></div>"
+			+ '<div class="chat-meta"><span class="chat-role agent" data-i18n="chatAgentLabel">' + esc(T.chatAgentLabel) + '</span><span class="chat-time">' + esc(answeredAt) + "</span></div>"
 			+ (answered
-				? '<div class="chat-bubble agent content">' + entry.answerHtml + "</div>"
-				: '<div class="chat-bubble agent"><div class="qa-wait"><span class="qa-pulse"></span>' + esc(T.chatWaiting) + "</div></div>")
+				? '<div class="chat-body content">' + entry.answerHtml + "</div>"
+				: '<div class="chat-body"><div class="qa-wait"><span class="qa-pulse"></span>' + esc(T.chatWaiting) + "</div></div>")
 			+ "</div>";
 	}
 
+	// The turn node keeps the class/data attributes that the export clone and refreshChat rely on.
 	function buildChatTurn(entry) {
 		var turn = document.createElement("div");
 		turn.className = "chat-turn" + (entry.answerHtml ? "" : " pending");
@@ -2297,32 +2318,61 @@ const PAGE_JS = `
 		try { enhanceCode(turn); renderMermaidBlocks(turn); } catch (e) { /* enhancements are best-effort */ }
 	}
 
-	// The chat area is part of the document flow, so "scroll to bottom" means window
-	// scrolling. force = false only scrolls when the area is on screen, so an answer
-	// cannot yank a reader away from the top of the document.
-	function chatScrollBottom(force) {
-		if (!chatList) return;
-		var last = chatList.querySelector(".chat-turn:last-child");
-		if (!last) return;
+	// Reversed timeline: the newest message sits at the top of the list, right under
+	// the input, so "show the new message" means the chat area's top edge. force =
+	// false keeps the old guard: only scroll when the area is on screen, so an
+	// arriving answer cannot yank a reader away from the article.
+	function chatScrollTop(force) {
+		var target = document.getElementById("chat");
+		if (!target) return;
 		if (!force) {
-			var rect = chatList.getBoundingClientRect();
+			var rect = target.getBoundingClientRect();
 			var vh = window.innerHeight || 0;
 			if (!(rect.top < vh && rect.bottom > 0)) return;
 		}
-		try { last.scrollIntoView({ behavior: motionOK ? "smooth" : "auto", block: "end" }); }
-		catch (e) { last.scrollIntoView(); }
+		try { target.scrollIntoView({ behavior: motionOK ? "smooth" : "auto", block: "start" }); }
+		catch (e) { target.scrollIntoView(); }
+	}
+
+	// chatList DOM order is now newest-first; the server still sends entries oldest
+	// first (init frame, boot DOC.qa), so insert by askedAt descending instead of
+	// appending. Strict "<" keeps same-millisecond ties in arrival order.
+	function insertChatTurn(turn, entry) {
+		var turns = chatList.querySelectorAll(".chat-turn");
+		for (var i = 0; i < turns.length; i++) {
+			var other = chatState[turns[i].getAttribute("data-chat")];
+			if (other && other.askedAt < entry.askedAt) {
+				chatList.insertBefore(turn, turns[i]);
+				return;
+			}
+		}
+		chatList.appendChild(turn);
 	}
 
 	// Idempotent by id: the SSE echo and the POST response race, whichever lands first wins.
 	// quiet = true (boot hydration) keeps the initial viewport where the reader expects it.
 	function addChat(entry, quiet) {
-		if (!entry || !entry.id || !chatList || chatState[entry.id]) return;
+		if (!entry || !entry.id || !chatList) return;
+		var known = chatState[entry.id];
+		if (known) {
+			// The SSE echo and the POST response race; whichever lands first wins and
+			// the loser only upgrades fields the winner lacked (questionHtml / answer).
+			var changed = false;
+			if (entry.questionHtml && !known.questionHtml) { known.questionHtml = entry.questionHtml; changed = true; }
+			if (entry.answerHtml && !known.answerHtml) {
+				known.answerHtml = entry.answerHtml;
+				known.answeredAt = entry.answeredAt;
+				changed = true;
+			}
+			if (changed) refreshChat(entry.id);
+			return;
+		}
 		chatState[entry.id] = entry;
 		if (chatEmpty) chatEmpty.hidden = true;
 		var turn = buildChatTurn(entry);
-		chatList.appendChild(turn);
+		insertChatTurn(turn, entry);
 		enhanceChatTurn(turn);
-		chatScrollBottom(!quiet);
+		chatScrollTop(!quiet);
 	}
 
 	function refreshChat(id) {
@@ -2330,28 +2380,21 @@ const PAGE_JS = `
 		if (!entry || !chatList) return;
 		var turn = chatList.querySelector('.chat-turn[data-chat="' + id + '"]');
 		if (!turn) return;
+		// The reply refreshes in place under its question, so this must not scroll: a reader
+		// parked further down the reversed timeline would otherwise be yanked around.
 		turn.classList.toggle("pending", !entry.answerHtml);
 		turn.innerHTML = chatTurnInnerHtml(entry);
 		enhanceChatTurn(turn);
-		chatScrollBottom(false);
 	}
 
-	// Reconnect catch-up: the init frame embeds the whole qa list, so pick up chat
-	// entries this tab never rendered and late answers for the ones it has.
+	// Reconnect catch-up: the init frame embeds the whole qa list (oldest first), so feed every
+	// chat entry through addChat: unknown ones are ordered into the reversed list, known ones are
+	// patched with whatever arrived while this tab was offline.
 	function syncChatFromQa(list) {
 		if (!chatUrl || !list || !list.length) return;
 		for (var i = 0; i < list.length; i++) {
 			var item = list[i];
 			if (!item || !item.chat || !item.id) continue;
-			var known = chatState[item.id];
-			if (known) {
-				if (item.answerHtml && !known.answerHtml) {
-					known.answerHtml = item.answerHtml;
-					known.answeredAt = item.answeredAt;
-					refreshChat(item.id);
-				}
-				continue;
-			}
 			addChat(item);
 		}
 	}
@@ -2370,9 +2413,19 @@ const PAGE_JS = `
 			if (!res.ok) throw new Error("http " + res.status);
 			return res.json();
 		}).then(function (data) {
-			if (!chatState[data.id]) addChat({ id: data.id, question: msg, answerHtml: null, askedAt: data.askedAt || Date.now(), answeredAt: null, chat: true });
+			// The response is a full payload carrying questionHtml, so the row renders Markdown right
+			// away; addChat is idempotent and only patches what the SSE echo (if it won) lacked.
+			addChat({
+				id: data.id,
+				question: data.question || msg,
+				questionHtml: data.questionHtml || null,
+				answerHtml: null,
+				askedAt: data.askedAt || Date.now(),
+				answeredAt: null,
+				chat: true,
+			});
 			toast(T.chatAskToast);
-			chatScrollBottom(true);
+			chatScrollTop(true);
 		}).catch(function () {
 			// Restore the draft so the message is not lost.
 			chatText.value = msg;
@@ -2686,12 +2739,12 @@ ${bodyHtml}
 		</div>
 		${chatUrl ? `<section class="chat" id="chat" aria-label="${escapeHtml(t.chatTitle)}" data-i18n-aria="chatTitle">
 			<div class="chat-head"><span class="chat-title" data-i18n="chatTitle">${escapeHtml(t.chatTitle)}</span></div>
-			<div class="chat-list" id="chatList">
-				<div class="chat-empty" id="chatEmpty" data-i18n="chatEmpty">${escapeHtml(t.chatEmpty)}</div>
-			</div>
 			<div class="chat-input" id="chatInput">
 				<textarea id="chatText" rows="3" maxlength="2000" placeholder="${escapeHtml(t.chatPlaceholder)}" data-i18n-placeholder="chatPlaceholder"></textarea>
 				<button type="button" id="chatSend" class="primary" data-i18n="chatSend">${escapeHtml(t.chatSend)}</button>
+			</div>
+			<div class="chat-list" id="chatList" role="log" aria-live="polite" aria-label="${escapeHtml(t.chatLogLabel)}" data-i18n-aria="chatLogLabel">
+				<div class="chat-empty" id="chatEmpty" data-i18n="chatEmpty">${escapeHtml(t.chatEmpty)}</div>
 			</div>
 		</section>` : ""}
 		<footer class="doc-foot">

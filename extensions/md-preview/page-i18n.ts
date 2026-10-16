@@ -96,6 +96,8 @@ export interface PageStrings {
 	chatAskToast: string;
 	chatFailToast: string;
 	chatPendingExport: string;
+	/** aria-label of the message list; tells screen-reader users the newest message is on top. */
+	chatLogLabel: string;
 
 	// ---- code copy / toasts ----
 	copyBtn: string;
@@ -187,6 +189,7 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		chatAskToast: "Message sent; waiting for the Agent…",
 		chatFailToast: "Failed to send the message; please retry",
 		chatPendingExport: "⏳ This message was still unanswered at export time",
+		chatLogLabel: "Message history, newest first",
 
 		copyBtn: "Copy",
 		copyDone: "Copied",
@@ -272,6 +275,7 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		chatAskToast: "已发送，等待 Agent 回复…",
 		chatFailToast: "消息发送失败，请重试",
 		chatPendingExport: "⏳ 导出时该消息尚未回复",
+		chatLogLabel: "消息记录，最新在前",
 
 		copyBtn: "复制",
 		copyDone: "已复制",
