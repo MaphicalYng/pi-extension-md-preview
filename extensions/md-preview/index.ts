@@ -52,20 +52,62 @@ const CHAT_CONTEXT_TURNS = 5;
 /** Max characters kept per verbatim excerpt in the chat context summary. */
 const CHAT_EXCERPT_MAX = 300;
 
-/** Trim a verbatim excerpt to CHAT_EXCERPT_MAX chars, marking cuts with an ellipsis line. */
+/**
+ * Collapse fenced code blocks in a history excerpt into a one-line placeholder.
+ * Code blocks are token-heavy and rarely needed for chat context; the placeholder keeps the
+ * language and body line count so the model still knows what the turn contained.
+ */
+function collapseCodeBlocks(text: string): string {
+	return text.replace(/```[^\n]*\n[\s\S]*?```/g, (block) => {
+		const info = (block.split("\n", 1)[0] ?? "").slice(3).trim() || "text";
+		const lines = block.split("\n").length - 2; // body lines between the fences
+		return `\`\`\`${info} [code block, ${lines} line${lines === 1 ? "" : "s"} collapsed]\`\`\``;
+	});
+}
+
+/**
+ * Trim a history excerpt to CHAT_EXCERPT_MAX chars: fenced code blocks are collapsed first, then
+ * the remainder is cut at a paragraph (or line) boundary when possible. The cut is annotated with
+ * how many lines / characters were dropped, so truncation is always explainable, never silent.
+ */
 function excerpt(text: string): string {
-	const clean = (text ?? "").trim();
-	return clean.length > CHAT_EXCERPT_MAX ? `${clean.slice(0, CHAT_EXCERPT_MAX)}\n…[excerpt truncated]` : clean;
+	const clean = collapseCodeBlocks((text ?? "").trim());
+	if (clean.length <= CHAT_EXCERPT_MAX) return clean;
+	const minKeep = Math.floor(CHAT_EXCERPT_MAX / 2);
+	let cutAt = clean.lastIndexOf("\n\n", CHAT_EXCERPT_MAX);
+	if (cutAt < minKeep) cutAt = clean.lastIndexOf("\n", CHAT_EXCERPT_MAX);
+	if (cutAt < minKeep) cutAt = CHAT_EXCERPT_MAX;
+	const dropped = clean.slice(cutAt).replace(/^\n+/, "");
+	const droppedLines = dropped ? dropped.split("\n").length : 0;
+	return `${clean.slice(0, cutAt)}\n…[truncated: ${droppedLines} more line${droppedLines === 1 ? "" : "s"}, ${dropped.length} chars omitted]`;
 }
 
 /** Format a preview-page chat message as a user message injected into the pi session, preceded by a short chat history summary. */
 function formatChatMessage(qa: AskNotice): string {
 	const history = qa.history ?? [];
+	const total = history.length;
 	const recent = history.slice(-CHAT_CONTEXT_TURNS);
+	// 1-based chat turn numbers over the document's full chat history (older turns stay addressable).
+	const firstNo = total - recent.length + 1;
 	const context: string[] = [];
 	if (recent.length) {
-		context.push(`Recent chat on this preview page (oldest first, last ${recent.length} turns):`);
-		for (const h of recent) context.push(`- user: ${excerpt(h.question)}\n  assistant: ${h.answerHtml ? excerpt(h.answerText ?? "") : "(not answered yet)"}`);
+		const omitted = firstNo - 1;
+		context.push(
+			`Recent chat on this preview page (oldest first): turns ${firstNo}-${total} of ${total}` +
+				(omitted ? `; turn${omitted === 1 ? "" : "s"} 1${omitted === 1 ? "" : `-${omitted}`} omitted (older entries dropped).` : "."),
+		);
+		context.push("");
+		context.push(
+			recent
+				.map((h, i) => {
+					const n = firstNo + i;
+					return [
+						`#${n} user [${h.id}]: ${excerpt(h.question)}`,
+						`#${n} assistant: ${h.answerHtml ? excerpt(h.answerText ?? "") : "(not answered yet)"}`,
+					].join("\n");
+				})
+				.join("\n\n---\n\n"),
+		);
 	} else {
 		context.push("This is the first chat message on this preview page.");
 	}
@@ -77,7 +119,7 @@ function formatChatMessage(qa: AskNotice): string {
 		"",
 		...context,
 		"",
-		"User message:",
+		`User message (turn #${total + 1}):`,
 		"",
 		"```text",
 		qa.question,
