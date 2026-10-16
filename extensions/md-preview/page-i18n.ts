@@ -85,6 +85,18 @@ export interface PageStrings {
 	qaFullTitle: string;
 	qaClose: string;
 
+	// ---- bottom chat with the agent ----
+	chatTitle: string;
+	chatEmpty: string;
+	chatPlaceholder: string;
+	chatSend: string;
+	chatYouLabel: string;
+	chatAgentLabel: string;
+	chatWaiting: string;
+	chatAskToast: string;
+	chatFailToast: string;
+	chatPendingExport: string;
+
 	// ---- code copy / toasts ----
 	copyBtn: string;
 	copyDone: string;
@@ -165,6 +177,17 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		qaFullTitle: "Full reply",
 		qaClose: "Close",
 
+		chatTitle: "Chat with the Agent",
+		chatEmpty: "No messages yet — ask the Agent anything about this document.",
+		chatPlaceholder: "Message the Agent… (Enter to send, Shift+Enter for a new line)",
+		chatSend: "Send",
+		chatYouLabel: "You",
+		chatAgentLabel: "Agent",
+		chatWaiting: "Waiting for the Agent…",
+		chatAskToast: "Message sent; waiting for the Agent…",
+		chatFailToast: "Failed to send the message; please retry",
+		chatPendingExport: "⏳ This message was still unanswered at export time",
+
 		copyBtn: "Copy",
 		copyDone: "Copied",
 		copyToast: "Code copied to clipboard",
@@ -238,6 +261,17 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		qaViewFull: "查看全文",
 		qaFullTitle: "完整回复",
 		qaClose: "关闭",
+
+		chatTitle: "与 Agent 对话",
+		chatEmpty: "还没有消息，直接向 Agent 提问吧",
+		chatPlaceholder: "向 Agent 发送消息…（Enter 发送，Shift+Enter 换行）",
+		chatSend: "发送",
+		chatYouLabel: "你",
+		chatAgentLabel: "Agent",
+		chatWaiting: "等待 Agent 回复…",
+		chatAskToast: "已发送，等待 Agent 回复…",
+		chatFailToast: "消息发送失败，请重试",
+		chatPendingExport: "⏳ 导出时该消息尚未回复",
 
 		copyBtn: "复制",
 		copyDone: "已复制",

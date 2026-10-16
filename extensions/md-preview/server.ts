@@ -55,16 +55,20 @@ interface DocState {
 	uiLang: UiLang;
 }
 
-/** One question-and-answer record created from a selected-text question on the preview page. */
+/** One question-and-answer record created from a selected-text question or a chat message on the preview page. */
 export interface QaEntry {
 	id: string;
 	docId: string;
-	/** Original passage the user selected in the preview page. */
+	/** Original passage the user selected in the preview page; empty for chat entries. */
 	quote: string;
-	/** The user's question. */
+	/** The user's question, or the message body for chat entries. */
 	question: string;
+	/** True for chat messages typed in the box at the bottom of the page (quote is then empty). */
+	chat?: boolean;
 	/** Agent reply as server-rendered HTML (raw HTML in the reply is rendered as escaped text). */
 	answerHtml?: string;
+	/** Raw Markdown of the agent reply: only used to summarize chat context, never sent to the page. */
+	answerText?: string;
 	askedAt: number;
 	answeredAt?: number;
 }
@@ -74,12 +78,21 @@ export interface QaPayload {
 	id: string;
 	quote: string;
 	question: string;
+	chat: boolean;
 	answerHtml: string | null;
 	askedAt: number;
 	answeredAt: number | null;
 }
 
+/** onAsk callback payload; chat notices additionally carry the document's earlier chat entries. */
+export type AskNotice = QaEntry & {
+	title: string;
+	/** Earlier chat entries of the same document, oldest first; chat notices only. */
+	history?: QaEntry[];
+};
+
 const MAX_QA_PER_DOC = 50;
+const MAX_CHAT_PER_DOC = 100; // per-doc chat cap; only chat entries are trimmed
 
 // ----------------------------------------------------------- version (footer)
 
@@ -172,7 +185,7 @@ const CONTENT_TYPES: Record<string, string> = {
 // page.ts (module B) adds `lang` to PageOptions later; declaring the extra field
 // here keeps both modules type-checking independently. Intersections are
 // idempotent, so this stays valid after module B lands.
-type RenderPageArgs = Parameters<typeof renderPage>[0] & { lang?: UiLang };
+type RenderPageArgs = Parameters<typeof renderPage>[0] & { lang?: UiLang; chatUrl?: string };
 
 export class PreviewServer {
 	private server: http.Server;
@@ -189,8 +202,8 @@ export class PreviewServer {
 	private noViewerSince: number | null = null;
 	private shuttingDown = false;
 	private onShutdown?: (reason: string) => void;
-	/** Callback fired when the preview page receives a question (the extension uses it to inject the question into the pi session and wake the agent). */
-	onAsk: ((qa: QaEntry & { title: string }) => void) | null = null;
+	/** Callback fired when the preview page receives a question or chat message (the extension uses it to inject the message into the pi session and wake the agent). */
+	onAsk: ((qa: AskNotice) => void) | null = null;
 	private qa = new Map<string, QaEntry>();
 	private qaSeq = 0;
 	port = 0;
@@ -411,13 +424,14 @@ export class PreviewServer {
 		this.broadcastEvent(doc.id, "update", payload);
 	}
 
-	// ------------------------------------------------- selected-text Q&A
+	// ---------------------------------------------------------- Q&A + chat
 
 	private qaPayload(e: QaEntry): QaPayload {
 		return {
 			id: e.id,
 			quote: e.quote,
 			question: e.question,
+			chat: e.chat === true,
 			answerHtml: e.answerHtml ?? null,
 			askedAt: e.askedAt,
 			answeredAt: e.answeredAt ?? null,
@@ -432,10 +446,16 @@ export class PreviewServer {
 	ask(doc: DocState, quote: string, question: string): QaEntry {
 		const entry: QaEntry = { id: `q${++this.qaSeq}`, docId: doc.id, quote, question, askedAt: Date.now() };
 		this.qa.set(entry.id, entry);
-		const list = this.qaList(doc.id);
-		if (list.length > MAX_QA_PER_DOC) {
-			for (const old of list.slice(0, list.length - MAX_QA_PER_DOC)) this.qa.delete(old.id);
+		// Only selected-text questions count against this cap: chat entries have their own.
+		const selected = [...this.qa.values()].filter((e) => e.docId === doc.id && !e.chat);
+		if (selected.length > MAX_QA_PER_DOC) {
+			for (const old of selected.slice(0, selected.length - MAX_QA_PER_DOC)) this.qa.delete(old.id);
 		}
+		// Advance the document version without broadcasting an update: it invalidates the `v` of every open
+		// EventSource, so a tab whose link dropped re-fetches the full init frame on its automatic reconnect
+		// (bringing along any question that arrived while the link was down). Online tabs are unaffected:
+		// they still receive the ask/answer events below.
+		doc.version++;
 		this.broadcastEvent(doc.id, "ask", JSON.stringify(this.qaPayload(entry)));
 		try {
 			this.onAsk?.({ ...entry, title: this.titleFor(doc) });
@@ -443,6 +463,36 @@ export class PreviewServer {
 			/* failing to inject into the pi session must not block the question itself */
 		}
 		return entry;
+	}
+
+	/** The preview page chat box submitted a message: persist it, broadcast the SSE ask event (chat: true), and let the extension inject it into the pi session. */
+	chat(doc: DocState, message: string): QaEntry {
+		const entry: QaEntry = { id: `q${++this.qaSeq}`, docId: doc.id, quote: "", question: message, chat: true, askedAt: Date.now() };
+		this.qa.set(entry.id, entry);
+		this.trimChat(doc.id);
+		// Same reason as ask(): make the `v` of already-open EventSource links stale, so a reconnect after a
+		// dropped link receives the full init frame (chat entries plus their answers included).
+		doc.version++;
+		this.broadcastEvent(doc.id, "ask", JSON.stringify(this.qaPayload(entry)));
+		try {
+			this.onAsk?.({ ...entry, title: this.titleFor(doc), history: this.chatHistory(doc.id, entry.id) });
+		} catch {
+			/* failing to inject into the pi session must not block the message itself */
+		}
+		return entry;
+	}
+
+	/** Keep only the newest MAX_CHAT_PER_DOC chat entries of a document (selected-text questions are capped separately). */
+	private trimChat(docId: string): void {
+		const chat = [...this.qa.values()].filter((e) => e.docId === docId && e.chat === true);
+		if (chat.length > MAX_CHAT_PER_DOC) {
+			for (const old of chat.slice(0, chat.length - MAX_CHAT_PER_DOC)) this.qa.delete(old.id);
+		}
+	}
+
+	/** Earlier chat entries of a document, oldest first (Map insertion order); the entry being injected is excluded. */
+	private chatHistory(docId: string, excludeId?: string): QaEntry[] {
+		return [...this.qa.values()].filter((e) => e.docId === docId && e.chat === true && e.id !== excludeId);
 	}
 
 	/**
@@ -461,6 +511,7 @@ export class PreviewServer {
 			return { ok: false, message: `No pending question found (question_id=${questionId ?? "earliest unanswered"}). Pending questions: ${pending}` };
 		}
 		entry.answerHtml = renderMarkdown(answer).html;
+		entry.answerText = answer;
 		entry.answeredAt = Date.now();
 		this.broadcastEvent(entry.docId, "answer", JSON.stringify({ id: entry.id, answerHtml: entry.answerHtml, answeredAt: entry.answeredAt }));
 		return { ok: true, message: `Answered preview question ${entry.id}; the reply card has been pushed to the browser.` };
@@ -487,7 +538,7 @@ export class PreviewServer {
 		}
 		if (p === "/mermaid.mjs") return this.serveMermaid(res);
 		if (p.startsWith("/asset/")) return this.serveAsset(res, p.slice("/asset/".length));
-		const m = p.match(/^\/doc\/([^/]+)(\/events|\/close|\/ask|\/download)?$/);
+		const m = p.match(/^\/doc\/([^/]+)(\/events|\/close|\/ask|\/chat|\/download)?$/);
 		if (m) {
 			const token = m[1] ?? "";
 			const sub = m[2] ?? "";
@@ -496,6 +547,7 @@ export class PreviewServer {
 			if (sub === "/events") return this.serveEvents(req, res, doc, url);
 			if (sub === "/close") return this.serveClose(req, res, doc, url);
 			if (sub === "/ask") return this.serveAsk(req, res, doc);
+			if (sub === "/chat") return this.serveChat(req, res, doc);
 			if (sub === "/download") return this.serveDownload(res, doc);
 			return this.serveDoc(res, doc);
 		}
@@ -551,6 +603,7 @@ export class PreviewServer {
 			updateUrl: `/doc/${doc.id}/events?c=${cid}&v=${doc.version}`,
 			closeUrl: `/doc/${doc.id}/close?c=${cid}`,
 			askUrl: `/doc/${doc.id}/ask`,
+			chatUrl: `/doc/${doc.id}/chat`,
 			qa: this.qaList(doc.id),
 			version: resolveVersion(),
 			themeHint,
@@ -602,6 +655,39 @@ export class PreviewServer {
 			return;
 		}
 		const entry = this.ask(doc, quote, question);
+		res.statusCode = 200;
+		res.end(JSON.stringify({ id: entry.id, askedAt: entry.askedAt }));
+	}
+
+	/**
+	 * Chat box entry point: validates `{ message: string }` (trimmed, 2000 chars max,
+	 * the same policy as /ask) and stores the message as a chat entry.
+	 */
+	private async serveChat(req: http.IncomingMessage, res: http.ServerResponse, doc: DocState): Promise<void> {
+		if (req.method !== "POST") {
+			res.statusCode = 405;
+			res.setHeader("Allow", "POST");
+			res.setHeader("Content-Type", "text/plain; charset=utf-8");
+			res.end("method not allowed");
+			return;
+		}
+		const body = await readBody(req);
+		let parsed: unknown = null;
+		try {
+			parsed = JSON.parse(body);
+		} catch {
+			/* an empty or non-JSON body counts as an invalid request */
+		}
+		const obj = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+		const message = typeof obj.message === "string" ? obj.message.trim().slice(0, 2000) : "";
+		res.setHeader("Content-Type", "application/json; charset=utf-8");
+		res.setHeader("Cache-Control", "no-store");
+		if (!message) {
+			res.statusCode = 400;
+			res.end(JSON.stringify({ error: "message must be a non-empty string" }));
+			return;
+		}
+		const entry = this.chat(doc, message);
 		res.statusCode = 200;
 		res.end(JSON.stringify({ id: entry.id, askedAt: entry.askedAt }));
 	}
@@ -884,7 +970,7 @@ let starting: Promise<PreviewServer> | null = null;
 
 export function ensureServer(opts?: {
 	onShutdown?: (reason: string) => void;
-	onAsk?: (qa: QaEntry & { title: string }) => void;
+	onAsk?: (qa: AskNotice) => void;
 }): Promise<PreviewServer> {
 	if (instance && instance.isOpen) return Promise.resolve(instance);
 	if (!starting) {

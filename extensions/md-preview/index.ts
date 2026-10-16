@@ -14,7 +14,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { currentServer, ensureServer, type QaEntry } from "./server";
+import { currentServer, ensureServer, type AskNotice, type QaEntry } from "./server";
 import { openBrowser } from "./browser";
 import type { UiLang } from "./prefs";
 
@@ -45,6 +45,47 @@ function formatAskMessage(qa: QaEntry & { title: string }): string {
 		"",
 		`Answer based on the relevant file contents, then send the reply back to the preview page with the md_preview_reply tool (question_id: "${qa.id}").`,
 	].join("\n");
+}
+
+/** Turns of chat history summarized into the injected chat message (contract item 4). */
+const CHAT_CONTEXT_TURNS = 5;
+/** Max characters kept per verbatim excerpt in the chat context summary. */
+const CHAT_EXCERPT_MAX = 300;
+
+/** Trim a verbatim excerpt to CHAT_EXCERPT_MAX chars, marking cuts with an ellipsis line. */
+function excerpt(text: string): string {
+	const clean = (text ?? "").trim();
+	return clean.length > CHAT_EXCERPT_MAX ? `${clean.slice(0, CHAT_EXCERPT_MAX)}\n…[excerpt truncated]` : clean;
+}
+
+/** Format a preview-page chat message as a user message injected into the pi session, preceded by a short chat history summary. */
+function formatChatMessage(qa: AskNotice): string {
+	const history = qa.history ?? [];
+	const recent = history.slice(-CHAT_CONTEXT_TURNS);
+	const context: string[] = [];
+	if (recent.length) {
+		context.push(`Recent chat on this preview page (oldest first, last ${recent.length} turns):`);
+		for (const h of recent) context.push(`- user: ${excerpt(h.question)}\n  assistant: ${h.answerHtml ? excerpt(h.answerText ?? "") : "(not answered yet)"}`);
+	} else {
+		context.push("This is the first chat message on this preview page.");
+	}
+	const unanswered = history.filter((h) => !h.answerHtml).map((h) => h.id);
+	const lines = [
+		"[Markdown preview page chat]",
+		"",
+		`Document: "${qa.title}"`,
+		"",
+		...context,
+		"",
+		"User message:",
+		"",
+		"```text",
+		qa.question,
+		"```",
+	];
+	if (unanswered.length) lines.push("", `Earlier chat messages are still unanswered (${unanswered.join(", ")}); answer them too with md_preview_reply when appropriate.`);
+	lines.push("", `Reply to this chat message with the md_preview_reply tool (question_id: "${qa.id}"). Write the reply in Markdown; it is rendered as Markdown on the preview page.`);
+	return lines.join("\n");
 }
 
 interface PreviewOutcome {
@@ -83,7 +124,7 @@ async function previewMarkdown(
 		},
 	});
 	// Preview-page question -> wake the agent by injecting it into the pi session.
-	server.onAsk = (qa) => sessionMessenger?.(formatAskMessage(qa));
+	server.onAsk = (qa) => sessionMessenger?.(qa.chat ? formatChatMessage(qa) : formatAskMessage(qa));
 	const handle = await server.openDocument(abs, { cwd: opts.cwd, title: opts.title, uiLang: opts.uiLang });
 
 	const tabAlreadyOpen = handle.liveViewers > 0;
@@ -183,8 +224,8 @@ const mdPreviewReplyTool = defineTool({
 	name: "md_preview_reply",
 	label: "Reply to Preview Question",
 	description:
-		"Reply to a question the user asked about a passage selected in the Markdown preview page. Call it only after receiving a \"[Markdown preview page question]\" message; " +
-		"the reply appears as a card on the left side of the preview page, showing the quoted passage, the reply text, and the reply time.",
+		"Reply to a message the user sent from the Markdown preview page: a question about a passage selected in the page (the message starts with \"[Markdown preview page question]\") or a message typed in the chat box at the bottom of the page (the message starts with \"[Markdown preview page chat]\"). " +
+		"Call it only after receiving one of those messages; the reply is rendered as Markdown on the preview page, as a reply card that shows the quoted passage for selected-text questions or as an assistant message in the page chat.",
 	parameters: Type.Object({
 		question_id: Type.Optional(Type.String({
 			description: "Question ID (given in the question message, e.g. q1); omit to reply to the earliest unanswered question",

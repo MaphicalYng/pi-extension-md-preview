@@ -167,6 +167,23 @@ for (let i = 0; i < scripts.length; i++) {
 	}
 }
 
+/* 5. Chat area (module B): conditional render + export stripping + routing. */
+const enChat = renderPage({ ...base, chatUrl: "/doc/doc-1/chat", lang: undefined });
+const zhChat = renderPage({ ...base, chatUrl: "/doc/doc-1/chat", lang: "zh" });
+for (const [label, html] of [
+	["en", enChat],
+	["zh", zhChat],
+]) {
+	check(html.includes('id="chatList"'), label + " chat render must contain chatList");
+	check(html.includes('data-i18n="chatTitle"'), label + " chat render must contain the chat title anchor");
+	check(html.includes('data-i18n-placeholder="chatPlaceholder"'), label + " chat render must contain the chat placeholder anchor");
+	check(html.includes('id="chatSend"'), label + " chat render must contain the chat send button");
+}
+check(!en.includes('id="chatInput"'), "render without chatUrl must not contain the chat area");
+check(pageSrc.includes('removeInClone(clone, ["chatInput"])'), "export does not strip the chat input area");
+check(pageSrc.includes("if (qa.chat) { addChat(qa); return; }"), "ask SSE does not route chat entries to the chat area");
+check(pageSrc.includes("chatState[d.id]"), "answer SSE does not route chat replies");
+
 /* Report. */
 if (failures.length) {
 	console.error("\npage-i18n-check: " + failures.length + " failure(s)");

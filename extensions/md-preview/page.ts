@@ -21,6 +21,8 @@ export interface PageQaEntry {
 	answerHtml?: string | null;
 	askedAt: number;
 	answeredAt?: number | null;
+	/** true = bottom chat message (quote === ""); absent/false = selection Q&A entry. */
+	chat?: boolean;
 }
 
 export interface PageOptions {
@@ -48,6 +50,8 @@ export interface PageOptions {
 	prefsUrl?: string;
 	/** POST endpoint that submits a question about the selected text. */
 	askUrl?: string;
+	/** POST endpoint for bottom chat messages (body { message }); omitted = no chat area rendered. */
+	chatUrl?: string;
 	/** Existing Q&A entries embedded at render time so cards survive reloads. */
 	qa?: PageQaEntry[];
 	/** Footer version stamp (e.g. 2026-10-13 · 9311172); omitted = no version in the footer. */
@@ -979,6 +983,71 @@ body {
 .qa-panel-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 :root[data-theme="dark"] .qa-panel-actions button.primary { color: #0e1116; }
 
+/* ---------- document chat (bottom conversation) ---------- */
+
+.chat {
+	margin-top: 48px;
+	border: 1px solid var(--border);
+	border-radius: 14px;
+	background: var(--bg-elev);
+	padding: 16px 18px;
+}
+.chat-head { margin-bottom: 12px; }
+.chat-title { font-weight: 650; font-size: 0.95rem; }
+.chat-list { display: flex; flex-direction: column; gap: 16px; }
+.chat-empty { color: var(--text-3); font-size: 0.86rem; text-align: center; padding: 14px 8px; }
+.chat-turn { display: flex; flex-direction: column; gap: 6px; }
+.chat-row { display: flex; flex-direction: column; gap: 3px; max-width: 88%; }
+.chat-row.you { align-self: flex-end; align-items: flex-end; }
+.chat-row.agent { align-self: flex-start; align-items: flex-start; }
+.chat-meta { display: flex; align-items: baseline; gap: 6px; font-size: 0.72rem; color: var(--text-3); }
+.chat-who { font-weight: 650; }
+.chat-bubble { border-radius: 12px; padding: 8px 12px; word-break: break-word; }
+.chat-bubble.you {
+	background: var(--accent);
+	color: #fff;
+	white-space: pre-wrap;
+}
+/* Mirror the existing .seg button.active handling: dark theme keeps the fill and darkens the text. */
+:root[data-theme="dark"] .chat-bubble.you { color: #0e1116; }
+/* The agent bubble also carries the .content class, so the article's typography
+   (headings, lists, quotes, inline code, .code-block, tables, mermaid) applies
+   inside the bubble without copying any of it. */
+.chat-bubble.agent {
+	background: var(--code-bg);
+	border: 1px solid var(--border-soft);
+	font-size: 0.93em;
+}
+.chat-bubble.agent > :first-child { margin-top: 0.2em; }
+.chat-bubble.agent > :last-child { margin-bottom: 0.2em; }
+.chat-input { margin-top: 14px; display: flex; gap: 8px; align-items: flex-end; }
+.chat-input textarea {
+	flex: 1;
+	resize: vertical;
+	font: inherit;
+	font-size: 0.82rem;
+	color: var(--text);
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 8px 10px;
+	outline: none;
+}
+.chat-input textarea:focus { border-color: var(--accent); }
+.chat-input button {
+	appearance: none;
+	font: inherit;
+	font-size: 0.78rem;
+	padding: 5px 14px;
+	border-radius: 8px;
+	border: 1px solid var(--border);
+	background: var(--bg);
+	color: var(--text-2);
+	cursor: pointer;
+}
+.chat-input button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+:root[data-theme="dark"] .chat-input button.primary { color: #0e1116; }
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 1080px) {
@@ -995,6 +1064,8 @@ body {
 	.content h1 { font-size: 1.72em; }
 	.heading-anchor { display: none; }
 	.to-top { right: 16px; bottom: 16px; }
+	.chat { padding: 14px; }
+	.chat-row { max-width: 94%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1007,7 +1078,7 @@ body {
 }
 
 @media print {
-	.progress, .topbar, .toc, .to-top, .toast, .copy-btn, .heading-anchor, .qa-rail, .qa-sel-btn, .qa-panel { display: none !important; }
+	.progress, .topbar, .toc, .to-top, .toast, .copy-btn, .heading-anchor, .qa-rail, .qa-sel-btn, .qa-panel, .chat-input { display: none !important; }
 	body { background: #fff; color: #000; }
 	.layout { display: block; padding: 0; }
 	.code-block { break-inside: avoid; }
@@ -1255,6 +1326,15 @@ const PAGE_JS = `
 			}
 		}
 		layoutQaCards();
+		// Rebuild every chat turn so dynamic copy (sender labels, waiting text, timestamps) follows the new language.
+		var chatTurns = chatList ? chatList.querySelectorAll(".chat-turn") : [];
+		for (var ct = 0; ct < chatTurns.length; ct++) {
+			var chatTurnId = chatTurns[ct].getAttribute("data-chat");
+			if (chatTurnId && chatState[chatTurnId]) {
+				chatTurns[ct].innerHTML = chatTurnInnerHtml(chatState[chatTurnId]);
+				enhanceChatTurn(chatTurns[ct]);
+			}
+		}
 		markLangActive();
 		var titleEl = document.getElementById("docTitle");
 		if (titleEl) document.title = titleEl.textContent + " \\u00b7 " + (T.titleSuffix || "Markdown Preview");
@@ -1823,7 +1903,11 @@ const PAGE_JS = `
 			try { applyUpdate(JSON.parse(e.data)); } catch (err) { /* ignore malformed frames */ }
 		});
 		es.addEventListener("init", function (e) {
-			try { applyUpdate(JSON.parse(e.data), true); } catch (err) { /* ignore malformed frames */ }
+			try {
+				var d = JSON.parse(e.data);
+				applyUpdate(d, true);
+				syncChatFromQa(d.qa);
+			} catch (err) { /* ignore malformed frames */ }
 		});
 		es.addEventListener("closing", function () {
 			setLive("down");
@@ -1832,6 +1916,8 @@ const PAGE_JS = `
 		es.addEventListener("ask", function (e) {
 			try {
 				var qa = JSON.parse(e.data);
+				// Chat entries (quote === "") go to the bottom conversation area; the qa rail path below is untouched.
+				if (qa.chat) { addChat(qa); return; }
 				// A question submitted by this tab is highlighted precisely with the still-live selection Range (supports spanning elements).
 				if (pendingSubmit && qa.quote === pendingSubmit.quote && qa.question === pendingSubmit.question) {
 					addQa(qa, pendingSubmit.range);
@@ -1844,6 +1930,14 @@ const PAGE_JS = `
 		es.addEventListener("answer", function (e) {
 			try {
 				var d = JSON.parse(e.data);
+				if (chatState[d.id]) {
+					chatState[d.id].answerHtml = d.answerHtml;
+					chatState[d.id].answeredAt = d.answeredAt;
+					refreshChat(d.id);
+					toast(T.qaAnsweredToast);
+					chatScrollBottom(false);
+					return;
+				}
 				var entry = qaState[d.id];
 				if (!entry) return;
 				entry.answerHtml = d.answerHtml;
@@ -2160,6 +2254,137 @@ const PAGE_JS = `
 		}
 	}
 
+	/* ---------- document chat (bottom conversation with the agent) ---------- */
+
+	// The endpoint's presence decides whether the chat area exists at all: until the
+	// server (module A) passes chatUrl there is no DOM here and every entry point below
+	// stays dormant instead of failing.
+	var chatUrl = DOC.chatUrl || "";
+	var chatList = document.getElementById("chatList");
+	var chatEmpty = document.getElementById("chatEmpty");
+	var chatText = document.getElementById("chatText");
+	var chatSend = document.getElementById("chatSend");
+	var chatState = {};   // id -> entry; DOM order is the conversation order, so no extra order array
+
+	// One turn = the user row plus the agent row. Every dynamic string goes through esc().
+	function chatTurnInnerHtml(entry) {
+		var answered = !!entry.answerHtml;
+		var askedAt = entry.askedAt ? fmtTime(entry.askedAt) : "";
+		var answeredAt = answered && entry.answeredAt ? fmtTime(entry.answeredAt) : "";
+		return '<div class="chat-row you">'
+			+ '<div class="chat-meta"><span class="chat-who" data-i18n="chatYouLabel">' + esc(T.chatYouLabel) + '</span><span class="chat-time">' + esc(askedAt) + "</span></div>"
+			+ '<div class="chat-bubble you">' + esc(entry.question) + "</div>"
+			+ "</div>"
+			+ '<div class="chat-row agent">'
+			+ '<div class="chat-meta"><span class="chat-who" data-i18n="chatAgentLabel">' + esc(T.chatAgentLabel) + '</span><span class="chat-time">' + esc(answeredAt) + "</span></div>"
+			+ (answered
+				? '<div class="chat-bubble agent content">' + entry.answerHtml + "</div>"
+				: '<div class="chat-bubble agent"><div class="qa-wait"><span class="qa-pulse"></span>' + esc(T.chatWaiting) + "</div></div>")
+			+ "</div>";
+	}
+
+	function buildChatTurn(entry) {
+		var turn = document.createElement("div");
+		turn.className = "chat-turn" + (entry.answerHtml ? "" : " pending");
+		turn.setAttribute("data-chat", entry.id);
+		turn.innerHTML = chatTurnInnerHtml(entry);
+		return turn;
+	}
+
+	// Copy buttons, syntax highlighting and mermaid are scoped to this one turn, so
+	// neither the article body nor the qa rail is touched.
+	function enhanceChatTurn(turn) {
+		try { enhanceCode(turn); renderMermaidBlocks(turn); } catch (e) { /* enhancements are best-effort */ }
+	}
+
+	// The chat area is part of the document flow, so "scroll to bottom" means window
+	// scrolling. force = false only scrolls when the area is on screen, so an answer
+	// cannot yank a reader away from the top of the document.
+	function chatScrollBottom(force) {
+		if (!chatList) return;
+		var last = chatList.querySelector(".chat-turn:last-child");
+		if (!last) return;
+		if (!force) {
+			var rect = chatList.getBoundingClientRect();
+			var vh = window.innerHeight || 0;
+			if (!(rect.top < vh && rect.bottom > 0)) return;
+		}
+		try { last.scrollIntoView({ behavior: motionOK ? "smooth" : "auto", block: "end" }); }
+		catch (e) { last.scrollIntoView(); }
+	}
+
+	// Idempotent by id: the SSE echo and the POST response race, whichever lands first wins.
+	// quiet = true (boot hydration) keeps the initial viewport where the reader expects it.
+	function addChat(entry, quiet) {
+		if (!entry || !entry.id || !chatList || chatState[entry.id]) return;
+		chatState[entry.id] = entry;
+		if (chatEmpty) chatEmpty.hidden = true;
+		var turn = buildChatTurn(entry);
+		chatList.appendChild(turn);
+		enhanceChatTurn(turn);
+		chatScrollBottom(!quiet);
+	}
+
+	function refreshChat(id) {
+		var entry = chatState[id];
+		if (!entry || !chatList) return;
+		var turn = chatList.querySelector('.chat-turn[data-chat="' + id + '"]');
+		if (!turn) return;
+		turn.classList.toggle("pending", !entry.answerHtml);
+		turn.innerHTML = chatTurnInnerHtml(entry);
+		enhanceChatTurn(turn);
+		chatScrollBottom(false);
+	}
+
+	// Reconnect catch-up: the init frame embeds the whole qa list, so pick up chat
+	// entries this tab never rendered and late answers for the ones it has.
+	function syncChatFromQa(list) {
+		if (!chatUrl || !list || !list.length) return;
+		for (var i = 0; i < list.length; i++) {
+			var item = list[i];
+			if (!item || !item.chat || !item.id) continue;
+			var known = chatState[item.id];
+			if (known) {
+				if (item.answerHtml && !known.answerHtml) {
+					known.answerHtml = item.answerHtml;
+					known.answeredAt = item.answeredAt;
+					refreshChat(item.id);
+				}
+				continue;
+			}
+			addChat(item);
+		}
+	}
+
+	function sendChat() {
+		if (!chatUrl || !chatText) return;
+		var msg = String(chatText.value || "").trim();
+		if (!msg) return;
+		if (msg.length > 2000) { toast(T.chatFailToast); return; }
+		chatText.value = "";
+		fetch(chatUrl, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ message: msg }),
+		}).then(function (res) {
+			if (!res.ok) throw new Error("http " + res.status);
+			return res.json();
+		}).then(function (data) {
+			if (!chatState[data.id]) addChat({ id: data.id, question: msg, answerHtml: null, askedAt: data.askedAt || Date.now(), answeredAt: null, chat: true });
+			toast(T.chatAskToast);
+			chatScrollBottom(true);
+		}).catch(function () {
+			// Restore the draft so the message is not lost.
+			chatText.value = msg;
+			toast(T.chatFailToast);
+		});
+	}
+
+	if (chatUrl && chatSend) chatSend.addEventListener("click", sendChat);
+	if (chatUrl && chatText) chatText.addEventListener("keydown", function (e) {
+		if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+	});
+
 	/* ---------- export HTML (offline snapshot: clone -> sanitize -> freeze -> inline images -> download) ---------- */
 
 	var EXPORT_RUNTIME = ${JSON.stringify(EXPORT_JS).replace(/</g, "\\u003c")};
@@ -2274,6 +2499,7 @@ const PAGE_JS = `
 		var scripts = clone.querySelectorAll("script");
 		for (var i = 0; i < scripts.length; i++) scripts[i].parentNode.removeChild(scripts[i]);
 		removeInClone(clone, ["exportBtn", "downloadBtn", "qaSelBtn", "askPanel", "langSeg", "qaModal"]);
+		removeInClone(clone, ["chatInput"]);
 		var prog = clone.querySelector(".progress");
 		if (prog && prog.parentNode) prog.parentNode.removeChild(prog);
 		var exportedAt = Date.now();
@@ -2299,6 +2525,21 @@ const PAGE_JS = `
 			if (rail.parentNode) rail.parentNode.removeChild(rail);
 			var layoutClone = clone.querySelector("#layout");
 			if (layoutClone) layoutClone.classList.remove("with-qa");
+		}
+
+		/* 3b) Chat: an empty conversation leaves no trace; waiting turns become static notes */
+		var chatClone = clone.querySelector("#chat");
+		if (chatClone && !chatClone.querySelector("#chatList .chat-turn")) {
+			if (chatClone.parentNode) chatClone.parentNode.removeChild(chatClone);
+		} else if (chatClone) {
+			var chatEmptyClone = chatClone.querySelector("#chatEmpty");
+			if (chatEmptyClone && chatEmptyClone.parentNode) chatEmptyClone.parentNode.removeChild(chatEmptyClone);
+			var pendingTurns = chatClone.querySelectorAll(".chat-turn.pending");
+			for (var pt = 0; pt < pendingTurns.length; pt++) {
+				pendingTurns[pt].classList.remove("pending");
+				var waits = pendingTurns[pt].querySelectorAll(".qa-wait");
+				for (var wt = 0; wt < waits.length; wt++) waits[wt].textContent = T.chatPendingExport;
+			}
 		}
 
 		/* 4) Inject the offline runtime (theme/background/font size/line height/copy/back-to-top) */
@@ -2347,7 +2588,10 @@ const PAGE_JS = `
 	enhanceCode(document);
 	renderMermaidBlocks(document);
 	var bootQa = DOC.qa || [];
-	for (var bi = 0; bi < bootQa.length; bi++) addQa(bootQa[bi]);
+	for (var bi = 0; bi < bootQa.length; bi++) {
+		// quiet = true: hydrating history on load must not yank the page down to the chat area.
+		if (bootQa[bi].chat) addChat(bootQa[bi], true); else addQa(bootQa[bi]);
+	}
 	onScroll();
 })();
 `;
@@ -2368,10 +2612,10 @@ function icon(name: string): string {
 }
 
 export function renderPage(options: PageOptions): string {
-	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefLineHeight, prefBg, downloadUrl, prefsUrl, askUrl, qa, version } = options;
+	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefLineHeight, prefBg, downloadUrl, prefsUrl, askUrl, chatUrl, qa, version } = options;
 	const lang = normalizeLang(options.lang);
 	const t = STRINGS[lang];
-	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, qa: qa ?? [], downloadUrl: downloadUrl ?? null, lang, i18n: STRINGS }).replace(/</g, "\\u003c");
+	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, chatUrl: chatUrl ?? null, qa: qa ?? [], downloadUrl: downloadUrl ?? null, lang, i18n: STRINGS }).replace(/</g, "\\u003c");
 	const hintAttr = themeHint ? ` data-theme-hint="${escapeHtml(themeHint)}"` : "";
 	const scaleAttr = typeof prefScale === "number" && isFinite(prefScale) ? ` data-pref-scale="${prefScale}"` : "";
 	const lineHeightAttr = typeof prefLineHeight === "number" && isFinite(prefLineHeight) ? ` data-pref-line-height="${prefLineHeight}"` : "";
@@ -2440,6 +2684,16 @@ ${THEME_BOOT}
 		<div class="content" id="content">
 ${bodyHtml}
 		</div>
+		${chatUrl ? `<section class="chat" id="chat" aria-label="${escapeHtml(t.chatTitle)}" data-i18n-aria="chatTitle">
+			<div class="chat-head"><span class="chat-title" data-i18n="chatTitle">${escapeHtml(t.chatTitle)}</span></div>
+			<div class="chat-list" id="chatList">
+				<div class="chat-empty" id="chatEmpty" data-i18n="chatEmpty">${escapeHtml(t.chatEmpty)}</div>
+			</div>
+			<div class="chat-input" id="chatInput">
+				<textarea id="chatText" rows="3" maxlength="2000" placeholder="${escapeHtml(t.chatPlaceholder)}" data-i18n-placeholder="chatPlaceholder"></textarea>
+				<button type="button" id="chatSend" class="primary" data-i18n="chatSend">${escapeHtml(t.chatSend)}</button>
+			</div>
+		</section>` : ""}
 		<footer class="doc-foot">
 			<span>pi &middot; md-preview</span>
 			<span>&middot;</span>
