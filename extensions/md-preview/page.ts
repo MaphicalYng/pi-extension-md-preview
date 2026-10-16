@@ -816,6 +816,81 @@ body {
 .qa-a > :first-child { margin-top: 0.2em; }
 .qa-a > :last-child { margin-bottom: 0.2em; }
 .qa-a code { font-size: 0.85em; }
+/* Long answers are clamped to a few lines; a "view full text" button
+   (revealed only when the clamp actually hides content) opens a centered
+   modal with the complete reply. */
+.qa-a.clampable { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+.qa-a.is-clamped { -webkit-line-clamp: 6; }
+.qa-more {
+	appearance: none;
+	border: 0;
+	background: none;
+	padding: 4px 0 0;
+	font: inherit;
+	font-size: 0.78rem;
+	font-weight: 600;
+	color: var(--accent);
+	cursor: pointer;
+}
+.qa-more:hover { color: var(--accent-hover); text-decoration: underline; }
+
+/* Centered modal showing the full reply of a clamped card. */
+.qa-modal {
+	position: fixed;
+	inset: 0;
+	z-index: 400;
+	display: none;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+	background: rgba(14, 17, 22, 0.5);
+}
+.qa-modal.show { display: flex; }
+.qa-modal-card {
+	width: min(760px, 100%);
+	max-height: min(82vh, 900px);
+	display: flex;
+	flex-direction: column;
+	background: var(--bg-elev);
+	border: 1px solid var(--border);
+	border-radius: 14px;
+	box-shadow: var(--shadow-2);
+}
+.qa-modal-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--border);
+}
+.qa-modal-title { font-weight: 650; font-size: 0.95rem; }
+.qa-modal-close {
+	appearance: none;
+	border: 0;
+	background: none;
+	font: inherit;
+	font-size: 1.25rem;
+	line-height: 1;
+	color: var(--text-3);
+	cursor: pointer;
+	padding: 2px 6px;
+	border-radius: 6px;
+}
+.qa-modal-close:hover { color: var(--text); background: var(--accent-soft); }
+.qa-modal-quote {
+	margin: 12px 16px 0;
+	border-left: 3px solid #e88911;
+	background: rgba(232, 137, 17, 0.1);
+	padding: 5px 8px;
+	border-radius: 0 6px 6px 0;
+	color: var(--text-2);
+	font-size: 0.85em;
+	word-break: break-all;
+}
+.qa-modal-body { overflow: auto; padding: 12px 16px 16px; line-height: var(--line-height); }
+.qa-modal-body > :first-child { margin-top: 0.2em; }
+.qa-modal-body > :last-child { margin-bottom: 0.2em; }
 .qa-wait { color: var(--text-3); display: flex; align-items: center; gap: 7px; padding: 4px 0; }
 .qa-pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: qaPulse 1.2s ease-in-out infinite; }
 @keyframes qaPulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
@@ -1176,7 +1251,7 @@ const PAGE_JS = `
 		for (var id in qaState) {
 			if (Object.prototype.hasOwnProperty.call(qaState, id)) {
 				var card = qaRail.querySelector('.qa-card[data-qa="' + id + '"]');
-				if (card) card.innerHTML = cardInnerHtml(qaState[id]);
+				if (card) { card.innerHTML = cardInnerHtml(qaState[id]); updateCardClamp(card); }
 			}
 		}
 		layoutQaCards();
@@ -1313,6 +1388,7 @@ const PAGE_JS = `
 		savePrefs({ scale: scale });
 		fontValue.textContent = Math.round(scale * 100) + "%";
 		layoutQaCards();
+		updateAllQaClamp();
 	}
 	document.getElementById("fontMinus").addEventListener("click", function () { setScale(scale - 0.1); });
 	document.getElementById("fontPlus").addEventListener("click", function () { setScale(scale + 0.1); });
@@ -1865,7 +1941,7 @@ const PAGE_JS = `
 			+ '<div class="qa-quote"><span class="qa-label">' + esc(T.qaLabelQuote) + "</span>" + esc(entry.quote) + "</div>"
 			+ '<div class="qa-q"><span class="qa-label">' + esc(T.qaLabelQuestion) + "</span>" + esc(entry.question) + "</div>"
 			+ (answered
-				? '<div class="qa-a">' + entry.answerHtml + "</div>"
+				? '<div class="qa-a">' + entry.answerHtml + '</div><button type="button" class="qa-more" hidden>' + esc(T.qaViewFull) + "</button>"
 				: '<div class="qa-wait"><span class="qa-pulse"></span>' + esc(T.qaWaiting) + "</div>");
 	}
 
@@ -1884,7 +1960,67 @@ const PAGE_JS = `
 		if (!card) return;
 		card.classList.remove("pending");
 		card.innerHTML = cardInnerHtml(entry);
+		updateCardClamp(card);
 		layoutQaCards();
+	}
+
+	/* Long-reply clamping + full-text modal.
+	   Answers longer than the CSS line clamp (-webkit-line-clamp: 6) get an
+	   ellipsis and a "view full text" button; clicking it opens a centered
+	   modal with the complete reply. Measurement trick: apply the clamp,
+	   compare scrollHeight (full content) against clientHeight (clamped
+	   viewport); a real difference means content is actually hidden. */
+	function updateCardClamp(card) {
+		var a = card.querySelector(".qa-a");
+		var btn = card.querySelector(".qa-more");
+		if (!a) { if (btn) btn.hidden = true; return; }
+		a.classList.add("clampable");
+		a.classList.add("is-clamped");
+		var clamped = a.scrollHeight - a.clientHeight > 2;
+		a.classList.toggle("is-clamped", clamped);
+		if (btn) btn.hidden = !clamped;
+	}
+
+	function updateAllQaClamp() {
+		if (!qaRail) return;
+		var cards = qaRail.children;
+		for (var i = 0; i < cards.length; i++) updateCardClamp(cards[i]);
+	}
+
+	var qaModal = document.getElementById("qaModal");
+	var qaModalQuote = document.getElementById("qaModalQuote");
+	var qaModalBody = document.getElementById("qaModalBody");
+
+	function openQaModal(id) {
+		var entry = qaState[id];
+		if (!entry || !entry.answerHtml || !qaModal) return;
+		qaModalQuote.innerHTML = '<span class="qa-label">' + esc(T.qaLabelQuote) + "</span>" + esc(entry.quote);
+		qaModalBody.innerHTML = entry.answerHtml;
+		try { enhanceCode(qaModalBody); } catch (err) { /* copy buttons are a nice-to-have */ }
+		qaModal.classList.add("show");
+		document.body.style.overflow = "hidden";
+	}
+
+	function closeQaModal() {
+		if (!qaModal) return;
+		qaModal.classList.remove("show");
+		document.body.style.overflow = "";
+	}
+
+	if (qaModal) {
+		qaModal.addEventListener("click", function (e) { if (e.target === qaModal) closeQaModal(); });
+		var qaModalCloseBtn = document.getElementById("qaModalClose");
+		if (qaModalCloseBtn) qaModalCloseBtn.addEventListener("click", closeQaModal);
+		document.addEventListener("keydown", function (e) {
+			if (e.key === "Escape" && qaModal.classList.contains("show")) closeQaModal();
+		});
+		// Cards re-render their innerHTML on refresh/lang switch, so delegate.
+		qaRail.addEventListener("click", function (e) {
+			var btn = e.target && e.target.closest ? e.target.closest(".qa-more") : null;
+			if (!btn || btn.hidden) return;
+			var card = btn.closest(".qa-card");
+			if (card) openQaModal(card.getAttribute("data-qa"));
+		});
 	}
 
 	function anchorY(id) {
@@ -1930,7 +2066,9 @@ const PAGE_JS = `
 		var ok = false;
 		if (range) ok = highlightRange(entry.id, range);
 		if (!ok) highlightByText(entry.id, entry.quote);
-		qaRail.appendChild(buildCard(entry.id, entry));
+		var freshCard = buildCard(entry.id, entry);
+		qaRail.appendChild(freshCard);
+		updateCardClamp(freshCard);
 		layoutQaCards();
 	}
 
@@ -1940,7 +2078,7 @@ const PAGE_JS = `
 		}
 		layoutQaCards();
 	}
-	window.addEventListener("resize", layoutQaCards);
+	window.addEventListener("resize", function () { layoutQaCards(); updateAllQaClamp(); });
 
 	/* selection interaction: floating ask button + ask panel */
 	var selBtn = document.getElementById("qaSelBtn");
@@ -2135,7 +2273,7 @@ const PAGE_JS = `
 		/* 2) Strip scripts and online interactions (entries that would surely fail or be wrong offline) */
 		var scripts = clone.querySelectorAll("script");
 		for (var i = 0; i < scripts.length; i++) scripts[i].parentNode.removeChild(scripts[i]);
-		removeInClone(clone, ["exportBtn", "downloadBtn", "qaSelBtn", "askPanel", "langSeg"]);
+		removeInClone(clone, ["exportBtn", "downloadBtn", "qaSelBtn", "askPanel", "langSeg", "qaModal"]);
 		var prog = clone.querySelector(".progress");
 		if (prog && prog.parentNode) prog.parentNode.removeChild(prog);
 		var exportedAt = Date.now();
@@ -2150,6 +2288,12 @@ const PAGE_JS = `
 		/* 3) QA: keep answered cards as-is; turn waiting ones into a static note (dashed border kept, pulse removed) */
 		var waiting = clone.querySelectorAll(".qa-card.pending .qa-wait");
 		for (var j = 0; j < waiting.length; j++) waiting[j].textContent = T.qaPendingExport;
+		// Long replies are clamped in the live view; the offline export must show
+		// them in full, without the "view full text" button.
+		var clampedAnswers = clone.querySelectorAll(".qa-a");
+		for (var ca = 0; ca < clampedAnswers.length; ca++) clampedAnswers[ca].classList.remove("clampable", "is-clamped");
+		var moreBtns = clone.querySelectorAll(".qa-more");
+		for (var mb = 0; mb < moreBtns.length; mb++) if (moreBtns[mb].parentNode) moreBtns[mb].parentNode.removeChild(moreBtns[mb]);
 		var rail = clone.querySelector("#qaRail");
 		if (rail && !rail.querySelector(".qa-card")) {
 			if (rail.parentNode) rail.parentNode.removeChild(rail);
@@ -2321,6 +2465,17 @@ ${bodyHtml}
 
 <button class="to-top" id="toTop" type="button" aria-label="${escapeHtml(t.toTop)}" title="${escapeHtml(t.toTop)}" data-i18n-title="toTop" data-i18n-aria="toTop">${icon("up")}</button>
 <div class="toast" id="toast" role="status"></div>
+
+<div class="qa-modal" id="qaModal">
+	<div class="qa-modal-card" role="dialog" aria-modal="true" aria-labelledby="qaModalTitle">
+		<div class="qa-modal-head">
+			<span class="qa-modal-title" id="qaModalTitle" data-i18n="qaFullTitle">${escapeHtml(t.qaFullTitle)}</span>
+			<button type="button" class="qa-modal-close" id="qaModalClose" aria-label="${escapeHtml(t.qaClose)}" title="${escapeHtml(t.qaClose)}" data-i18n-title="qaClose" data-i18n-aria="qaClose">&times;</button>
+		</div>
+		<div class="qa-modal-quote" id="qaModalQuote"></div>
+		<div class="qa-modal-body" id="qaModalBody"></div>
+	</div>
+</div>
 
 <script>window.__MDP__ = ${docState};</script>
 <script>${PAGE_JS}</script>

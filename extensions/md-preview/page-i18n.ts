@@ -81,6 +81,9 @@ export interface PageStrings {
 	qaAskFailToast: string;
 	qaAnsweredToast: string;
 	qaPendingExport: string;
+	qaViewFull: string;
+	qaFullTitle: string;
+	qaClose: string;
 
 	// ---- code copy / toasts ----
 	copyBtn: string;
@@ -158,6 +161,9 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		qaAskFailToast: "Failed to send the question; please retry",
 		qaAnsweredToast: "Agent replied",
 		qaPendingExport: "⏳ This question was still unanswered at export time",
+		qaViewFull: "View full text",
+		qaFullTitle: "Full reply",
+		qaClose: "Close",
 
 		copyBtn: "Copy",
 		copyDone: "Copied",
@@ -229,6 +235,9 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		qaAskFailToast: "提问发送失败，请重试",
 		qaAnsweredToast: "Agent 已回复",
 		qaPendingExport: "⏳ 导出时该提问尚未回复",
+		qaViewFull: "查看全文",
+		qaFullTitle: "完整回复",
+		qaClose: "关闭",
 
 		copyBtn: "复制",
 		copyDone: "已复制",

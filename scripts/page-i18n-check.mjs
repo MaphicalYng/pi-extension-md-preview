@@ -90,7 +90,7 @@ if (!exportMatch) {
 check(!HAN.test(pageSrc), "page.ts still contains Chinese characters");
 check(pageSrc.includes('clone.setAttribute("data-export-i18n", JSON.stringify(T))'), "buildExportDocument does not freeze data-export-i18n");
 check(
-	pageSrc.includes('removeInClone(clone, ["exportBtn", "downloadBtn", "qaSelBtn", "askPanel", "langSeg"])'),
+	pageSrc.includes('removeInClone(clone, ["exportBtn", "downloadBtn", "qaSelBtn", "askPanel", "langSeg", "qaModal"])'),
 	"export does not strip the language switch group (langSeg)",
 );
 check(pageSrc.includes('if (d.lang === "en" || d.lang === "zh")'), "PAGE_JS does not consume the SSE lang field");
