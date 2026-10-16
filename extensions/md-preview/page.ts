@@ -136,6 +136,12 @@ const PAGE_CSS = `
 	--accent: #2f6feb;
 	--accent-hover: #255ed0;
 	--accent-soft: rgba(47, 111, 235, 0.09);
+	/* Chat feed tints stay deliberately faint: the conversation reads first, the
+	   color coding only whispers who said what. */
+	--chat-you-bg: rgba(47, 111, 235, 0.05);
+	--chat-you-bar: rgba(47, 111, 235, 0.4);
+	--chat-agent-bg: rgba(116, 128, 144, 0.07);
+	--chat-agent-bar: rgba(116, 128, 144, 0.3);
 	--code-bg: #f5f6f9;
 	--code-head: #eef0f4;
 	--inline-code-bg: #f0f2f6;
@@ -159,6 +165,10 @@ const PAGE_CSS = `
 	--accent: #6ea8fe;
 	--accent-hover: #8dbcff;
 	--accent-soft: rgba(110, 168, 254, 0.13);
+	--chat-you-bg: rgba(110, 168, 254, 0.09);
+	--chat-you-bar: rgba(110, 168, 254, 0.5);
+	--chat-agent-bg: rgba(255, 255, 255, 0.05);
+	--chat-agent-bar: rgba(255, 255, 255, 0.25);
 	--code-bg: #11161e;
 	--code-head: #171e28;
 	--inline-code-bg: #1a2129;
@@ -999,7 +1009,8 @@ body {
 /* Reversed timeline: the list reads newest first, every turn keeps its own anchor. */
 .chat-turn { display: flex; flex-direction: column; gap: 8px; }
 /* Alternating rows instead of bubbles: a role chip plus a full-width tinted row
-   (accent left bar for the reader, neutral bar for the agent) tells the sides apart. */
+   (accent left bar for the reader, neutral bar for the agent) tells the sides apart.
+   Row tints use the faint --chat-* vars so the blocks stay quiet. */
 .chat-row {
 	display: flex;
 	flex-direction: column;
@@ -1009,8 +1020,8 @@ body {
 	border-radius: 10px;
 	border-left: 3px solid transparent;
 }
-.chat-row.you { background: var(--accent-soft); border-left-color: var(--accent); }
-.chat-row.agent { background: var(--code-bg); border-left-color: var(--text-3); }
+.chat-row.you { background: var(--chat-you-bg); border-left-color: var(--chat-you-bar); }
+.chat-row.agent { background: var(--chat-agent-bg); border-left-color: var(--chat-agent-bar); }
 .chat-meta { display: flex; align-items: baseline; gap: 8px; font-size: 0.72rem; color: var(--text-3); }
 .chat-role {
 	display: inline-block;
@@ -1020,9 +1031,7 @@ body {
 	padding: 0 9px;
 	border-radius: 999px;
 }
-.chat-role.you { background: var(--accent); color: #fff; }
-/* Mirror the existing .seg button.active handling: dark theme keeps the fill and darkens the text. */
-:root[data-theme="dark"] .chat-role.you { color: #0e1116; }
+.chat-role.you { background: var(--accent-soft); color: var(--text); }
 .chat-role.agent { background: var(--bg-elev); color: var(--text-2); border: 1px solid var(--border-soft); }
 /* The body carries the .content class for rendered Markdown, so the article's typography
    (headings, lists, quotes, inline code, .code-block, tables, mermaid) applies there
