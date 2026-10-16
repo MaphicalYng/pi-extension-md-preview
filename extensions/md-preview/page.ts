@@ -2555,6 +2555,15 @@ const PAGE_JS = `
 		removeInClone(clone, ["chatInput"]);
 		var prog = clone.querySelector(".progress");
 		if (prog && prog.parentNode) prog.parentNode.removeChild(prog);
+		/* Transient toast state must not be frozen into the snapshot: the
+		   "preparing export" toast is on-screen while this clone is taken.
+		   Keep the #toast element (the offline runtime reuses it for its own
+		   feedback) but clear the showing state and text. */
+		var toastClone = clone.querySelector("#toast");
+		if (toastClone) {
+			toastClone.classList.remove("show");
+			toastClone.textContent = "";
+		}
 		var exportedAt = Date.now();
 		clone.setAttribute("data-exported-at", String(exportedAt));
 		var pill = clone.querySelector("#livePill");
