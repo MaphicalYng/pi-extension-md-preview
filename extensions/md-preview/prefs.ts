@@ -1,5 +1,6 @@
 /**
- * User-level preferences for the markdown preview (theme + font scale + line height).
+ * User-level preferences for the markdown preview (theme + font scale + line height
+ * + the browser host used when opening previews).
  *
  * Stored as JSON at $XDG_CONFIG_HOME/md-preview/settings.json (falling back
  * to ~/.config). Browser localStorage alone cannot do this job: it is keyed
@@ -8,6 +9,11 @@
  *
  * Priority when a page loads: localStorage (per-origin, newest local action)
  * > this file (user level) > MD_PREVIEW_THEME env hint > built-in defaults.
+ *
+ * `browserHost` is the one key that is user-level only: it has no localStorage
+ * counterpart and the preview page cannot write it (the /prefs endpoint accepts
+ * theme / bg / scale / lineHeight only). It is set with the /md-preview-host
+ * command and read at every preview call, so it applies across pi instances.
  *
  * Writes are atomic (temp file + rename) and debounced so a burst of font-size /
  * line-height clicks does not hammer the disk.
@@ -33,6 +39,11 @@ export interface UserPrefs {
 	scale: number | null;
 	/** null = not set (falls back to 1.75). */
 	lineHeight: number | null;
+	/**
+	 * Browser host used to build the preview URL. null = not set (previews fall back to the
+	 * server bind address). User-level only: never writable from the preview page.
+	 */
+	browserHost: string | null;
 }
 
 /** Kept in sync with the front-end setScale clamp range. */
@@ -61,6 +72,45 @@ export function clampLineHeight(value: unknown): number | null {
 	return Math.min(LINEHEIGHT_MAX, Math.max(LINEHEIGHT_MIN, Math.round(value * 100) / 100));
 }
 
+/**
+ * Validate a browser host for the persisted setting. Returns a human-readable
+ * error message for invalid input, or null when the value is acceptable.
+ *
+ * Accepted: hostname (`my-pc.local`), IPv4 (`192.168.10.10`), bare IPv6 (`::1`,
+ * `fe80::1%en0`) and bracketed IPv6 (`[::1]`, stored de-bracketed). Rejected:
+ * empty values, whitespace, scheme / path (`http://...`, `host/...`) and any port
+ * suffix (`host:8080`, `[::1]:8080`) - the port always comes from the running
+ * preview server (a fresh random port per session), never from this setting.
+ */
+export function browserHostError(value: string): string | null {
+	const v = value.trim();
+	if (!v) return "host must not be empty";
+	if (/\s/.test(v)) return "host must not contain whitespace";
+	// One structural message covers scheme / path / port / garbage.
+	const bad = (x: string) => `expects a bare IP or hostname, not \`${x}\` (no scheme / path / port)`;
+	if (v.includes("/")) return bad(v);
+	if (v.startsWith("[")) {
+		// Bracketed form: [IPv6] only, nothing after the closing bracket (no port).
+		const m = /^\[([0-9a-fA-F:.]+(?:%[0-9A-Za-z._~-]+)?)\]$/.exec(v);
+		return m ? null : bad(v);
+	}
+	if (v.includes(":")) {
+		// Unbracketed: only bare IPv6 passes (hex/colon/dot charset, optional zone id, 2+ colons);
+		// `host:8080` and `fe80:1` fail the colon count, `http:foo` fails the charset.
+		const ipv6 = /^[0-9a-fA-F:.]+(?:%[0-9A-Za-z._~-]+)?$/.test(v) && (v.match(/:/g) ?? []).length >= 2;
+		return ipv6 ? null : bad(v);
+	}
+	return /^[A-Za-z0-9._-]+$/.test(v) ? null : bad(v);
+}
+
+/** Validation gate for load/save: invalid values collapse to null (unset), like the other normalize* helpers. */
+export function normalizeBrowserHost(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	if (browserHostError(value) !== null) return null;
+	const v = value.trim();
+	return v.startsWith("[") ? v.slice(1, -1) : v; // canonicalize [::1] -> ::1 (withUrlHost re-brackets)
+}
+
 /** Accepts "en"/"zh" (case-insensitive; "zh-CN"-style tags collapse to "zh"); null = not set. */
 export function normalizeUiLang(value: unknown): UiLang | null {
 	if (typeof value !== "string") return null;
@@ -78,6 +128,20 @@ export function resolveUiLang(explicit?: UiLang | null): UiLang {
 	return normalizeUiLang(explicit) ?? normalizeUiLang(process.env.MD_PREVIEW_LANG) ?? "en";
 }
 
+/** Where the browser host for a preview URL came from. */
+export type BrowserHostSource = "explicit" | "persisted" | "bind";
+
+/** Explicit --host > persisted browserHost > bind fallback. Pure; the caller reads prefs at call time. */
+export function pickBrowserHost(
+	explicit: string | null | undefined,
+	persisted: string | null | undefined,
+	bindFallback: string,
+): { host: string; source: BrowserHostSource } {
+	if (explicit) return { host: explicit, source: "explicit" };
+	if (persisted) return { host: persisted, source: "persisted" };
+	return { host: bindFallback, source: "bind" };
+}
+
 /** Evaluated at call time rather than module load, so tests can inject XDG_CONFIG_HOME. */
 export function prefsFilePath(): string {
 	const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
@@ -93,9 +157,10 @@ export function loadPrefs(file: string = prefsFilePath()): UserPrefs {
 			bg: normalizeBg(obj.bg),
 			scale: clampScale(obj.scale),
 			lineHeight: clampLineHeight(obj.lineHeight),
+			browserHost: normalizeBrowserHost(obj.browserHost),
 		};
 	} catch {
-		return { theme: null, bg: null, scale: null, lineHeight: null };
+		return { theme: null, bg: null, scale: null, lineHeight: null, browserHost: null };
 	}
 }
 
@@ -106,6 +171,7 @@ export function savePrefs(patch: Partial<UserPrefs>, file: string = prefsFilePat
 	if (patch.bg !== undefined) merged.bg = normalizeBg(patch.bg);
 	if (patch.scale !== undefined) merged.scale = clampScale(patch.scale);
 	if (patch.lineHeight !== undefined) merged.lineHeight = clampLineHeight(patch.lineHeight);
+	if (patch.browserHost !== undefined) merged.browserHost = normalizeBrowserHost(patch.browserHost);
 	writePrefsAtomic(merged, file);
 	return merged;
 }
@@ -159,7 +225,13 @@ export function savePrefsDebounced(patch: Partial<UserPrefs>, file: string = pre
 	return { ...loadPrefs(file), ...resolvePatch(pendingPatch) };
 }
 
-/** Same validation semantics as savePrefs: explicit null resets, invalid values are ignored. */
+/**
+ * Same validation semantics as savePrefs: explicit null resets, invalid values are ignored.
+ *
+ * `browserHost` is deliberately absent from the returned object: this is the page-write channel
+ * (POST /prefs), and keeping the key out means the page can never touch it. The caller-side
+ * spread `{ ...loadPrefs(file), ...resolvePatch(...) }` still carries the persisted value through.
+ */
 function resolvePatch(patch: Partial<UserPrefs> | null): { theme: ThemePref | null; bg: BgPref | null; scale: number | null; lineHeight: number | null } {
 	const out = {
 		theme: undefined as ThemePref | null | undefined,

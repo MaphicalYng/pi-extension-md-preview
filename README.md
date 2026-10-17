@@ -16,7 +16,7 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 | --- | --- |
 | Markdown as a web page | Self-contained, zero-dependency Markdown renderer (GFM-style): headings, tables, fenced code (25+ languages highlighted), blockquotes (incl. `[!NOTE]` admonitions), task lists, footnotes, images, autolinks |
 | Mermaid diagrams | `mermaid` fenced blocks render as diagrams; the mermaid runtime is lazy-loaded from the preview server's own origin (flowcharts, sequence diagrams, …) |
-| Agent-initiated preview + auto-open browser | The `md_preview` tool starts a local server and opens the page in the system default browser (macOS `open` / Linux `xdg-open` / Windows `start`), de-duplicating across tabs (an already-open tab is reused); `/md-preview <file> --host <ip>` can pick which IP the tab opens with |
+| Agent-initiated preview + auto-open browser | The `md_preview` tool starts a local server and opens the page in the system default browser (macOS `open` / Linux `xdg-open` / Windows `start`), de-duplicating across tabs (an already-open tab is reused); `/md-preview <file> --host <ip>` can pick which IP the tab opens with, and `/md-preview-host <ip>` persists that choice in the user-level config so every pi instance opens at it |
 | No babysitting | The tool returns immediately and the server runs on its own. It exits 8 s after the last tab closes (or 5 min after start if no tab ever opened), with a final safety exit when the Pi session shuts down |
 | Bilingual UI (en / zh) | The agent always picks the page UI language explicitly via the required `ui_lang` tool parameter, chosen from the user's language; an in-page 中/EN switch lets the reader override it (remembered in `localStorage`) |
 | Clean, modern reading experience | Minimal reading layout, paper-texture backgrounds, page progress bar, table of contents with scroll highlighting, code blocks with language label + one-click copy |
@@ -78,10 +78,14 @@ The tool returns the page URL; the agent shares it with the user and moves on �
 ```
 /md-preview reports/summary.md
 /md-preview reports/summary.md --host 192.168.1.10   # open the tab at this IP (the server must listen on 0.0.0.0)
+/md-preview-host 192.168.10.10                       # persist this browser host for every preview
+/md-preview-host --clear                             # forget it and fall back to the server bind address
 /md-preview              # list documents currently being previewed
 ```
 
 The port and the `?token=` access token are preserved when `--host` rewrites the URL; see [Listening address & access token](#listening-address--access-token).
+
+The browser host is resolved on every preview call as **explicit `--host` > persisted `browserHost` > the server bind address** (`127.0.0.1` for a wildcard bind). Because the persisted value is read at call time, a pi instance that is already running picks it up on its next preview — no `/reload` and no restart needed.
 
 ### Standalone demo (no Pi session needed)
 
@@ -125,12 +129,12 @@ Agent writes .md ──► md_preview tool ──► local preview server (127.0
 
 ```
 extensions/md-preview/
-├── index.ts       # extension entry: md_preview / md_preview_reply tools + /md-preview command + shutdown safety net
+├── index.ts       # extension entry: md_preview / md_preview_reply tools + /md-preview + /md-preview-host commands + shutdown safety net
 ├── render.ts      # zero-dependency Markdown → HTML renderer (GFM subset + code highlighting)
 ├── page.ts        # page template: CSS theme system + interaction scripts (TOC/theme/font/live sync/ask/export)
 ├── page-i18n.ts   # bilingual UI string table (en/zh) + language normalization
 ├── server.ts      # local HTTP server: routing, SSE live sync, viewer counting, auto-exit, /prefs, /doc/{id}/ask, /doc/{id}/download
-├── prefs.ts       # user-level preferences (theme/bg/scale/line-height): load, validate, atomic debounced persistence
+├── prefs.ts       # user-level preferences (theme/bg/scale/line-height + persisted browser host): load, validate, atomic debounced persistence
 └── browser.ts     # cross-platform default-browser opener
 scripts/
 ├── check.mjs             # npm run check: link host type definitions and run strict TypeScript checks
@@ -145,7 +149,7 @@ Pi loads the TypeScript sources directly via jiti — no build step; `tsconfig.j
 
 | Environment variable | Effect |
 | --- | --- |
-| `MD_PREVIEW_HOST` | Bind address, default `127.0.0.1`. Set `0.0.0.0` (or a specific NIC IP) to serve other machines. **Read when the preview server starts (the first preview of the session)**; an env change mid-session needs a pi restart to take effect |
+| `MD_PREVIEW_HOST` | Bind address, default `127.0.0.1`. Set `0.0.0.0` (or a specific NIC IP) to serve other machines. **Read when the preview server starts (the first preview of the session)**; an env change mid-session needs a pi restart to take effect. It only decides the bind address — which host the browser opens is chosen by the persisted setting (`/md-preview-host`) and `--host` |
 | `MD_PREVIEW_TOKEN` | Fixed access token, overriding the random URL-safe token generated at startup (useful for a stable remote link). Every page URL carries `?token=` |
 | `MD_PREVIEW_THEME` | Initial theme hint: `system` / `light` / `dark` (only applies until the user picks a theme) |
 | `MD_PREVIEW_LANG` | Fallback UI language: `en` / `zh` (used by the `/md-preview` command; the `md_preview` tool always passes `ui_lang` explicitly) |
@@ -167,7 +171,8 @@ MD_PREVIEW_HOST=0.0.0.0 pi
 ```
 
 - `--host <ip>` only decides which host the browser and the shared URL use; the port and `?token=` always match the server's. It accepts `--host <ip>`, `--host=<ip>` and `--host "<ip>"`, before or after the file path.
-- Binding `0.0.0.0` (or `::`) without `--host` opens the browser at `127.0.0.1` — the local reading view. A remote reader needs `--host <ip-reachable-from-them>` (or the equivalent manual edit) and must keep the `?token=`.
+- `/md-preview-host <ip|hostname>` persists the browser host in the user-level config: it is used whenever a preview opens without `--host`, in this instance and in every other pi instance (the value is read at call time). `/md-preview-host` shows the persisted value, the effective value with its source and the settings file path; `/md-preview-host --clear` removes it. A persisted host the bind address does not cover keeps working with the same warning described below.
+- Binding `0.0.0.0` (or `::`) without `--host` and without a persisted host opens the browser at `127.0.0.1` — the local reading view. A remote reader needs `--host <ip-reachable-from-them>` (or the equivalent manual edit) and must keep the `?token=`.
 - A `--host` the bind address does not cover (bound to `127.0.0.1`, asking for a LAN IP) still previews, but the transcript and the UI warning tell you to start pi with `MD_PREVIEW_HOST=0.0.0.0` and restart: the server is a per-session singleton, so an env change mid-session does not rebind an already-running server.
 - A malformed `--host` (missing value, given twice, or a URL such as `http://host`) is rejected with an explicit error and no browser is opened.
 
@@ -179,6 +184,8 @@ Theme, reading background, font scale and line height persist on two levels:
 2. **Browser `localStorage`** (`mdp.theme` / `mdp.bg` / `mdp.scale` / `mdp.lineHeight` / `mdp.lang`): same-origin fast cache, effective immediately within a session; when it misses (e.g. a new port), the user-level file is the fallback.
 
 Load priority: `localStorage` (most recent action on this origin) > user prefs file > `MD_PREVIEW_THEME` env hint > built-in defaults (follow system, white background, 100% font, 1.75 line height). Background and line height have no env hint and fall back straight to the built-in defaults. The UI language follows its own chain: in-page `localStorage` choice > server-sent language (tool param / env / default).
+
+`browserHost` is the exception: it is **user-level only**. The preview page cannot write it — `POST /prefs` accepts the four page keys (`theme` / `bg` / `scale` / `lineHeight`) and the server whitelists exactly those, so a page request can never change the saved host. It is set from the `/md-preview-host` command and resolved for every preview as `--host` > persisted `browserHost` > `localBrowserHost(server.host)` (a wildcard bind opens on `127.0.0.1`).
 
 Example prefs file:
 

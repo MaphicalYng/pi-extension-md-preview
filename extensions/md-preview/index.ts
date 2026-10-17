@@ -16,7 +16,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentServer, ensureServer, type AskNotice, type QaEntry } from "./server";
 import { openBrowser } from "./browser";
-import type { UiLang } from "./prefs";
+import { loadPrefs, savePrefs, prefsFilePath, browserHostError, pickBrowserHost, type UiLang } from "./prefs";
 
 type Notify = (message: string, type?: "info" | "warning" | "error") => void;
 
@@ -225,6 +225,16 @@ function hostMismatchWarning(listenHost: string, targetHost: string, port: numbe
 	);
 }
 
+/**
+ * The live preview server, if any. `currentServer()` keeps returning the last instance after it
+ * exits (auto-exit / shutdown), so callers that report or warn about "the running server" must
+ * check `isOpen` first.
+ */
+function liveServer() {
+	const server = currentServer();
+	return server && server.isOpen ? server : null;
+}
+
 /** Shared by the `md_preview` tool and the `/md-preview` command. */
 async function previewMarkdown(
 	file: string,
@@ -256,7 +266,13 @@ async function previewMarkdown(
 	const handle = await server.openDocument(abs, { cwd: opts.cwd, title: opts.title, uiLang: opts.uiLang });
 
 	// One page URL drives the browser, the transcript and details.url (never mix hosts).
-	const targetHost = opts.host ?? localBrowserHost(server.host);
+	// The host is read at call time (not extension load): a host saved by another pi instance - or by
+	// /md-preview-host in this one - takes effect on the very next preview, no reload needed.
+	const { host: targetHost } = pickBrowserHost(
+		opts.host, // explicit --host from the command (the tool has no host parameter)
+		loadPrefs().browserHost, // persisted user-level setting; loadPrefs re-reads the file on every call
+		localBrowserHost(server.host), // bind fallback (a wildcard bind opens on loopback)
+	);
 	const pageUrl = withUrlHost(handle.url, targetHost);
 
 	const tabAlreadyOpen = handle.liveViewers > 0;
@@ -407,6 +423,37 @@ function completeMarkdownFiles(prefix: string): { value: string; label: string }
 	return hits.length > 0 ? hits : null;
 }
 
+/** Parsed `/md-preview-host` arguments: show the setting, set it, or clear it. */
+interface HostCmdArgs {
+	mode: "show" | "set" | "clear";
+	value?: string;
+	error?: string;
+}
+
+/** Usage line shared by every `/md-preview-host` transcript output. */
+const HOST_CMD_USAGE =
+	"Usage: `/md-preview-host <ip|hostname>` sets the persistent browser host · `/md-preview-host --clear` removes it · `/md-preview-host` (no argument) shows the current setting";
+
+/**
+ * Parse `/md-preview-host` arguments. No argument means show; an explicit empty value is an error,
+ * so "forgot the IP" never silently clears the setting. Validation is shared with the prefs layer.
+ */
+function parseHostCmdArgs(raw: string): HostCmdArgs {
+	const head = raw.trim();
+	if (!head) return { mode: "show" }; // bare `/md-preview-host` shows the current setting
+	const v = head.replace(/^["']|["']$/g, "").trim();
+	if (!v)
+		return {
+			mode: "show",
+			error: "host must not be empty; provide a bare IP or hostname (e.g. `192.168.10.10`) or `--clear` to remove the saved host",
+		};
+	if (v === "--clear" || v === "clear") return { mode: "clear" }; // "clear" is an ergonomic alias; a machine literally named "clear" is not a plausible target
+	if (v.startsWith("-")) return { mode: "show", error: `unknown option \`${v}\`` };
+	const err = browserHostError(v);
+	if (err) return { mode: "show", error: err };
+	return { mode: "set", value: v };
+}
+
 export default function mdPreviewExtension(pi: ExtensionAPI) {
 	sessionMessenger = (text) => {
 		try {
@@ -451,6 +498,8 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 						"",
 						"`--host <ip>` opens the browser tab at that IP instead of the bind address, e.g. `/md-preview reports/summary.md --host 192.168.1.10`. The port and the `?token=` access token are preserved. The preview server must listen on an address that covers that IP: start pi with `MD_PREVIEW_HOST=0.0.0.0` (the bind address is fixed for the whole session, so a restart is required).",
 						"",
+						"To avoid passing `--host` on every call, persist it once with `/md-preview-host <ip|hostname>` (user-level settings, shared by every pi instance); `/md-preview-host --clear` removes it. An explicit `--host` still wins per call.",
+						"",
 						`Current previews:\n${list}`,
 					].join("\n"),
 				});
@@ -458,6 +507,72 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 			}
 			const outcome = await previewMarkdown(parsed.file, { cwd: ctx.cwd, notify, host: parsed.host });
 			pi.sendMessage({ customType: "md_preview", display: true, content: outcome.text });
+		},
+	});
+
+	pi.registerCommand("md-preview-host", {
+		description:
+			"Persist the browser host used when opening previews: /md-preview-host <ip|hostname> | --clear | (no argument shows the current setting)",
+		getArgumentCompletions: (prefix) =>
+			"--clear".startsWith(prefix.trim()) ? [{ value: "--clear", label: "--clear (remove the saved host)" }] : null,
+		handler: async (args, ctx) => {
+			const notify: Notify = (message, type) => ctx.ui.notify(message, type);
+			const send = (content: string) => pi.sendMessage({ customType: "md_preview", display: true, content });
+			const parsed = parseHostCmdArgs(args);
+			if (parsed.error) {
+				// Explicit error, no write: an invalid host must never reach the settings file.
+				send([`Invalid \`/md-preview-host\` arguments: ${parsed.error}`, ``, HOST_CMD_USAGE].join("\n"));
+				notifySafely(notify, `Markdown preview: ${parsed.error}`, "error");
+				return;
+			}
+			if (parsed.mode === "set") {
+				const saved = savePrefs({ browserHost: parsed.value! }); // synchronous atomic write: visible to every instance right away
+				const host = saved.browserHost!; // validation already passed, so the canonical (de-bracketed) value is non-null
+				const server = liveServer();
+				// An already-running server keeps its original bind: warn (do not block) when it does not cover the new host.
+				const warn = server && needsHostWarning(server.host, host) ? hostMismatchWarning(server.host, host, server.port) : undefined;
+				if (warn) notifySafely(notify, `Markdown preview: ${warn}`, "warning");
+				notifySafely(notify, `Markdown preview: browser host set to ${host}`, "info");
+				send(
+					[
+						`Browser host saved: \`${host}\` — every preview (this and any other pi instance) opens at this host from its next preview on.`,
+						...(warn ? [`Warning: ${warn}`] : []),
+						``,
+						"An explicit `--host` on `/md-preview` still overrides this per call; `/md-preview-host --clear` removes it.",
+					].join("\n"),
+				);
+				return;
+			}
+			if (parsed.mode === "clear") {
+				savePrefs({ browserHost: null });
+				notifySafely(notify, "Markdown preview: browser host cleared", "info");
+				send("Browser host cleared — previews fall back to the server bind address.");
+				return;
+			}
+			// show: report the persisted value, the value the next preview would use and its source.
+			const persisted = loadPrefs().browserHost;
+			const server = liveServer();
+			const bindFallback = server
+				? localBrowserHost(server.host)
+				: localBrowserHost(process.env.MD_PREVIEW_HOST?.trim() || "127.0.0.1");
+			const picked = pickBrowserHost(undefined, persisted, bindFallback);
+			const sourceLabel = picked.source === "persisted" ? "persisted setting" : "server bind fallback";
+			const bindLine = server
+				? `${server.host} (running)`
+				: "no preview server running; default 127.0.0.1 unless MD_PREVIEW_HOST is set";
+			send(
+				[
+					"Markdown preview browser host:",
+					`- Persisted setting: ${persisted ?? "not set"}`,
+					`- Effective for the next preview: ${picked.host} (source: ${sourceLabel})`,
+					`- Server bind: ${bindLine}`,
+					`- Settings file: ${prefsFilePath()}`,
+					``,
+					"Precedence: explicit `/md-preview <file> --host <ip>` > persisted setting > server bind address.",
+					"The setting is read at every preview call, so all pi instances use it from their next preview on.",
+					HOST_CMD_USAGE,
+				].join("\n"),
+			);
 		},
 	});
 

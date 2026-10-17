@@ -16,7 +16,7 @@
 | --- | --- |
 | Web 页面渲染 Markdown | 自研零依赖 Markdown 渲染器（GFM 风格）：标题、表格、围栏代码（25+ 语言高亮）、引用块（含 `[!NOTE]` 提示框）、任务列表、脚注、图片、自动链接 |
 | Mermaid 图表 | `mermaid` 语言围栏代码块渲染为图表：前端动态加载预览服务同源提供的 mermaid 运行时，自动绘制流程图、时序图等 |
-| Agent 主动呈现 + 自动开浏览器 | `md_preview` 工具：本地起服务 → 自动用系统默认浏览器打开标签页（macOS `open` / Linux `xdg-open` / Windows `start`），跨标签页去重（已打开则复用）；`/md-preview <file> --host <ip>` 可指定标签页打开的 IP |
+| Agent 主动呈现 + 自动开浏览器 | `md_preview` 工具：本地起服务 → 自动用系统默认浏览器打开标签页（macOS `open` / Linux `xdg-open` / Windows `start`），跨标签页去重（已打开则复用）；`/md-preview <file> --host <ip>` 可指定标签页打开的 IP，`/md-preview-host <ip>` 可把该 host 持久化到用户级配置，所有 pi 实例自动使用 |
 | Agent 无需保持工作 | 工具立即返回；预览服务独立运行。用户关闭全部标签页 8 秒后（或浏览器标签从未打开 5 分钟后）服务自动退出；Pi 会话结束时兜底退出 |
 | 双语界面（中 / 英） | Agent 启动预览时通过必填的 `ui_lang` 工具参数显式选择页面 UI 语言（根据用户语言选定）；页面右上角提供 中/EN 切换控件，读者可随时覆盖（`localStorage` 记忆） |
 | 界面专业简洁现代 | 极简阅读版式、纸面纹理背景、页面进度条、目录导航（滚动高亮）、代码块「语言标签 + 一键复制」 |
@@ -78,10 +78,14 @@ pi --extension ./extensions/md-preview/index.ts
 ```
 /md-preview reports/summary.md
 /md-preview reports/summary.md --host 192.168.1.10   # 以该 IP 打开标签页（服务需监听 0.0.0.0）
+/md-preview-host 192.168.10.10                       # 持久化浏览器 host，所有预览都用它
+/md-preview-host --clear                             # 清除该设置，回落到服务绑定地址
 /md-preview              # 列出当前预览中的文档
 ```
 
 `--host` 只替换打开/分享 URL 的 host，端口与 `?token=` 访问令牌原样保留，详见下文「监听地址与访问 Token」。
+
+浏览器 host 在每次预览调用时解析，优先级为 **显式 `--host` > 持久化的 `browserHost` > 服务绑定地址**（通配符绑定时为 `127.0.0.1`）。持久化值在调用时读取，所以**已经在运行的 pi 实例在下一次预览就会生效**——不需要 `/reload`，也不需要重启。
 
 ### 独立 Demo（无需 Pi 会话）
 
@@ -125,12 +129,12 @@ Agent 写 .md ──► md_preview 工具 ──► 本地预览服务（127.0.0
 
 ```
 extensions/md-preview/
-├── index.ts       # 扩展入口：md_preview / md_preview_reply 工具 + /md-preview 命令 + 会话退出兜底
+├── index.ts       # 扩展入口：md_preview / md_preview_reply 工具 + /md-preview 与 /md-preview-host 命令 + 会话退出兜底
 ├── render.ts      # 零依赖 Markdown → HTML 渲染器（GFM 子集 + 代码高亮）
 ├── page.ts        # 页面模板：CSS 主题系统 + 交互脚本（TOC/主题/字号/实时刷新/选中提问/导出）
 ├── page-i18n.ts   # 双语 UI 文案表（en/zh）+ 语言归一化
 ├── server.ts      # 本地 HTTP 服务：路由、SSE 实时同步、viewer 计数、自动退出、/prefs、/doc/{id}/ask、/doc/{id}/download
-├── prefs.ts       # 用户级偏好（主题/背景/字号/行距）：读取、校验、原子落盘、防抖写入
+├── prefs.ts       # 用户级偏好（主题/背景/字号/行距 + 持久化浏览器 host）：读取、校验、原子落盘、防抖写入
 └── browser.ts     # 跨平台默认浏览器打开
 scripts/
 ├── check.mjs             # npm run check：链接宿主类型定义并做严格 TypeScript 检查
@@ -145,7 +149,7 @@ Pi 通过 jiti 直接加载 TypeScript 源码，无需构建步骤；`tsconfig.j
 
 | 环境变量 | 作用 |
 | --- | --- |
-| `MD_PREVIEW_HOST` | 绑定地址，默认 `127.0.0.1`。设为 `0.0.0.0`（或具体网卡 IP）可供其他机器访问。**在预览服务启动时（会话首次预览）读取**；会话中途改动需重启 pi 会话才生效 |
+| `MD_PREVIEW_HOST` | 绑定地址，默认 `127.0.0.1`。设为 `0.0.0.0`（或具体网卡 IP）可供其他机器访问。**在预览服务启动时（会话首次预览）读取**；会话中途改动需重启 pi 会话才生效。它只决定**绑定**地址；浏览器打开的 host 由持久化设置（`/md-preview-host`）与 `--host` 决定 |
 | `MD_PREVIEW_TOKEN` | 固定访问令牌，覆盖启动时生成的随机 URL-safe token（便于远程使用固定链接）；所有页面 URL 均携带 `?token=` |
 | `MD_PREVIEW_THEME` | 初始主题提示 `system` / `light` / `dark`（仅在用户未手动选择主题前生效） |
 | `MD_PREVIEW_LANG` | 兜底 UI 语言 `en` / `zh`（供 `/md-preview` 命令使用；`md_preview` 工具始终显式传 `ui_lang`） |
@@ -167,7 +171,8 @@ MD_PREVIEW_HOST=0.0.0.0 pi
 ```
 
 - `--host <ip>` 只决定浏览器与该分享 URL 使用哪个 host；端口与 `?token=` 始终与服务端一致。支持 `--host <ip>`、`--host=<ip>`、`--host "<ip>"` 三种写法，放在文件名前后均可。
-- 绑定 `0.0.0.0`（或 `::`）且未指定 `--host` 时，浏览器以 `127.0.0.1` 打开（本地阅读视角）；远程读者需 `--host <对端可达的 IP>`（或自行替换 IP），并保留 `?token=`。
+- `/md-preview-host <ip|hostname>` 把浏览器 host 持久化到用户级配置：凡未指定 `--host` 的预览都使用它，本实例和其他 pi 实例一律生效（调用时读取）。`/md-preview-host` 无参时显示持久化值、下次预览实际生效值与来源、配置文件路径；`/md-preview-host --clear` 清除。持久化 host 超出监听范围时仍可使用，会给出下方同样的警告。
+- 绑定 `0.0.0.0`（或 `::`）且既未指定 `--host` 也未持久化 host 时，浏览器以 `127.0.0.1` 打开（本地阅读视角）；远程读者需 `--host <对端可达的 IP>`（或自行替换 IP），并保留 `?token=`。
 - `--host` 指定的地址不在监听范围内（例如监听 `127.0.0.1` 却要求局域网 IP）时仍会预览，但命令输出与通知会给出警告，提示用 `MD_PREVIEW_HOST=0.0.0.0` 重启 pi：预览服务是**会话级单例**，中途改环境变量不会让已在运行的服务重新绑定。
 - `--host` 写法错误（缺值、重复，或写成 `http://host` 这类 URL）会直接报错，**不会打开浏览器**。
 
@@ -179,6 +184,8 @@ MD_PREVIEW_HOST=0.0.0.0 pi
 2. **浏览器 `localStorage`**（`mdp.theme` / `mdp.bg` / `mdp.scale` / `mdp.lineHeight` / `mdp.lang`）：同源加速缓存，同一会话内立即生效；跨端口失效时由用户级偏好兜底。
 
 加载优先级：`localStorage`（同端口内最近一次操作）> 用户偏好文件 > `MD_PREVIEW_THEME` 环境变量 > 内置默认（跟随系统、纯白背景、字号 100%、行距 1.75）。背景与行距不参与环境变量提示，未设置时直接回退内置默认。UI 语言走独立链路：页面内 `localStorage` 选择 > 服务端下发语言（工具参数 / 环境变量 / 默认）。
+
+`browserHost` 是唯一的例外：它**只有用户级一层**。页面端写不了它——`POST /prefs` 只接受页面可控的四个键（`theme` / `bg` / `scale` / `lineHeight`），服务端也按这四个键白名单过滤，所以页面请求永远改不到持久化的 host。它由 `/md-preview-host` 命令写入，每次预览按 `--host` > 持久化的 `browserHost` > `localBrowserHost(server.host)`（通配符绑定时为 `127.0.0.1`）解析。
 
 偏好文件示例：
 
