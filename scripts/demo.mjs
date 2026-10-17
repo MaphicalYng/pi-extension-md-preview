@@ -123,6 +123,22 @@ const server = await ensureServer();
 const handle = await server.openDocument(report, { cwd: demoDir, title: "md-preview 示例报告" });
 console.log(`预览页面：${handle.url}`);
 
+/*
+ * Token-gated URLs: every route now requires `?token=`, and handle.url already carries the
+ * token in its query, so `${handle.url}/events` style appends are broken. Rebuild sub-routes
+ * from port + doc id + token instead, and add the token to bare URLs too.
+ */
+const token = handle.token ?? server.token ?? "";
+/** Absolute preview-server URL for a path, with the access token attached when there is one. */
+const serverUrl = (pathname, params) => {
+	const u = new URL(pathname, `http://127.0.0.1:${server.port}/`);
+	if (token) u.searchParams.set("token", token);
+	for (const [key, value] of Object.entries(params ?? {})) u.searchParams.set(key, value);
+	return u.toString();
+};
+/** URL of a sub-route of the previewed document ("" = the page itself). */
+const docUrl = (sub = "", params) => serverUrl(`/doc/${handle.docId}${sub}`, params);
+
 if (smoke) {
 	const failures = [];
 
@@ -144,7 +160,7 @@ if (smoke) {
 		}
 		return false;
 	};
-	const page = await fetch(handle.url);
+	const page = await fetch(docUrl());
 	const html = await page.text();
 	if (!page.ok) failures.push(`GET /doc -> ${page.status}`);
 	if (!html.includes("md-preview 示例报告")) failures.push("页面缺少标题");
@@ -166,10 +182,10 @@ if (smoke) {
 	if (!html.includes('id="exportBtn"')) failures.push("页面缺少导出按钮");
 	if (!html.includes("离线导出")) failures.push("页面未注入导出运行时标记（离线导出）");
 
-	const index = await fetch(`http://127.0.0.1:${server.port}/`);
+	const index = await fetch(serverUrl("/"));
 	if (!index.ok) failures.push(`GET / -> ${index.status}`);
 
-	const events = await fetch(`${handle.url}/events?c=smoke`);
+	const events = await fetch(docUrl("/events", { c: "smoke" }));
 	let stream = "";
 	if (events.ok && events.body) {
 		const reader = events.body.getReader();
@@ -184,7 +200,7 @@ if (smoke) {
 	if (!events.ok || !stream.includes("retry:") || !stream.includes("event: init")) failures.push("SSE 端点异常");
 
 	// ---------- 用户级偏好（主题/字号/行距全局持久化） ----------
-	const prefsEndpoint = `http://127.0.0.1:${server.port}/prefs`;
+	const prefsEndpoint = serverUrl("/prefs");
 	const postPrefs = async (data) => {
 		const res = await fetch(prefsEndpoint, {
 			method: "POST",
@@ -226,14 +242,17 @@ if (smoke) {
 	if (!existsSync(prefsFile)) failures.push("偏好文件未写入 XDG_CONFIG_HOME");
 
 	// 页面注入：重新渲染的文档应携带用户级主题、字号与行距。
-	const page2 = await fetch(handle.url);
+	const page2 = await fetch(docUrl());
 	const html2 = page2.ok ? await page2.text() : "";
 	if (!page2.ok) failures.push(`GET /doc（二次）-> ${page2.status}`);
 	if (!html2.includes('data-theme-hint="dark"')) failures.push("页面未注入用户级主题");
 	if (!html2.includes('data-pref-scale="1.25"')) failures.push("页面未注入用户级字号");
 	if (!html2.includes('data-pref-line-height="1.9"')) failures.push("页面未注入用户级行距");
 	if (!html2.includes('data-pref-bg="wood"')) failures.push("页面未注入用户级背景");
-	if (!html2.includes('"/prefs"')) failures.push("页面缺少 prefsUrl 端点");
+	// prefsUrl 现在由服务端注入（带 token），不能再断言裸字面量 '"/prefs"'。
+	const prefsUrlInPage = html2.match(/"prefsUrl":"([^"]*)"/)?.[1] ?? "";
+	if (!/^\/prefs(\?|$)/.test(prefsUrlInPage)) failures.push("页面缺少 prefsUrl 端点");
+	else if (token && !prefsUrlInPage.includes("token=")) failures.push("页面 prefsUrl 未携带访问令牌");
 	if (!html2.includes('/download')) failures.push("页面缺少下载入口");
 
 	// 部分更新保留其他键；越界字号/行距被钳制；非法值被忽略；显式 null 重置。
@@ -258,7 +277,7 @@ if (smoke) {
 	if (prefsFinal.theme !== null || prefsFinal.bg !== "wood" || prefsFinal.scale !== 1.6 || prefsFinal.lineHeight !== null) failures.push(`落盘偏好异常：${JSON.stringify(prefsFinal)}`);
 
 	// ---------- 下载当前文档 ----------
-	const dl = await fetch(`${handle.url}/download`);
+	const dl = await fetch(docUrl("/download"));
 	if (dl.status !== 200) failures.push(`GET /download -> ${dl.status}`);
 	const cd = dl.headers.get("content-disposition") || "";
 	if (!cd.includes("attachment")) failures.push("下载缺少 attachment 头");
@@ -267,22 +286,22 @@ if (smoke) {
 	if (dlText !== SAMPLE_REPORT) failures.push("下载内容与源文件不一致");
 
 	// 不存在的文档下载应 404。
-	const dl404 = await fetch(`http://127.0.0.1:${server.port}/doc/nope/download`);
+	const dl404 = await fetch(serverUrl("/doc/nope/download"));
 	if (dl404.status !== 404) failures.push(`未知文档下载 -> ${dl404.status}`);
 
 	// ---------- 选中提问（ask → SSE → answer） ----------
 	const askBody = { quote: "核心链路平均延迟下降", question: "下降的主要原因是什么？" };
-	const askRes = await fetch(`${handle.url}/ask`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(askBody) });
+	const askRes = await fetch(docUrl("/ask"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(askBody) });
 	if (askRes.status !== 200) failures.push(`POST /ask -> ${askRes.status}`);
 	const askData = askRes.ok ? await askRes.json() : {};
 	if (!askData.id) failures.push("ask 未返回问题 id");
 
-	const badAsk = await fetch(`${handle.url}/ask`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quote: "", question: "" }) });
+	const badAsk = await fetch(docUrl("/ask"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quote: "", question: "" }) });
 	if (badAsk.status !== 400) failures.push(`POST /ask 空内容 -> ${badAsk.status}（应为 400）`);
 
 	// SSE：init 携带 qa；ask / answer 事件实时推送。
 	const acc = { text: "" };
-	const esRes = await fetch(`${handle.url}/events?c=smoke-qa`);
+	const esRes = await fetch(docUrl("/events", { c: "smoke-qa" }));
 	const esReader = esRes.ok && esRes.body ? esRes.body.getReader() : null;
 	if (!esReader) failures.push("无法建立问答 SSE 连接");
 	if (esReader) {
@@ -297,7 +316,7 @@ if (smoke) {
 		const orphan = server.answerQuestion("q999", "孤儿回复");
 		if (orphan.ok) failures.push("answerQuestion 未知 id 应失败");
 
-		const askRes2 = await fetch(`${handle.url}/ask`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quote: "P99 延迟", question: "还会再降吗？" }) });
+		const askRes2 = await fetch(docUrl("/ask"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quote: "P99 延迟", question: "还会再降吗？" }) });
 		const askData2 = askRes2.ok ? await askRes2.json() : {};
 		await readEventsUntil(esReader, acc, (t) => t.includes("event: ask"), "qa ask");
 		if (!acc.text.includes("event: ask") || !acc.text.includes(askData2.id)) failures.push("SSE ask 事件缺失或 id 不对");
@@ -305,7 +324,7 @@ if (smoke) {
 	}
 
 	// 重新渲染的页面应内嵌问答数据与提问端点。
-	const page3 = await fetch(handle.url);
+	const page3 = await fetch(docUrl());
 	const html3 = page3.ok ? await page3.text() : "";
 	if (!page3.ok) failures.push(`GET /doc（三次）-> ${page3.status}`);
 	if (!html3.includes("/ask")) failures.push("页面未注入提问端点");

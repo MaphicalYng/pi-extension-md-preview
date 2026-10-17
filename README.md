@@ -2,6 +2,10 @@
 
 English | [简体中文](README.zh-CN.md)
 
+[![npm version](https://img.shields.io/npm/v/pi-md-preview)](https://www.npmjs.com/package/pi-md-preview)
+[![npm downloads](https://img.shields.io/npm/dm/pi-md-preview)](https://www.npmjs.com/package/pi-md-preview)
+[![license](https://img.shields.io/npm/l/pi-md-preview)](LICENSE)
+
 A [Pi](https://github.com/earendil-works/pi-coding-agent) extension that renders agent-written Markdown files as polished, minimal, modern web pages and presents them in the browser.
 
 Built for structured-content delivery — **whenever the agent is about to output structured content (a report, research findings, a design document, a README, a multi-section article, a table, a list, a code example, …) longer than 150 characters, it must call this extension**: write the `.md` file, invoke one tool, and a beautifully typeset page opens in the browser. The agent does not need to keep working afterwards — once the user closes the tab, the preview server exits on its own.
@@ -12,7 +16,7 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 | --- | --- |
 | Markdown as a web page | Self-contained, zero-dependency Markdown renderer (GFM-style): headings, tables, fenced code (25+ languages highlighted), blockquotes (incl. `[!NOTE]` admonitions), task lists, footnotes, images, autolinks |
 | Mermaid diagrams | `mermaid` fenced blocks render as diagrams; the mermaid runtime is lazy-loaded from the preview server's own origin (flowcharts, sequence diagrams, …) |
-| Agent-initiated preview + auto-open browser | The `md_preview` tool starts a local server and opens the page in the system default browser (macOS `open` / Linux `xdg-open` / Windows `start`), de-duplicating across tabs (an already-open tab is reused) |
+| Agent-initiated preview + auto-open browser | The `md_preview` tool starts a local server and opens the page in the system default browser (macOS `open` / Linux `xdg-open` / Windows `start`), de-duplicating across tabs (an already-open tab is reused); `/md-preview <file> --host <ip>` can pick which IP the tab opens with |
 | No babysitting | The tool returns immediately and the server runs on its own. It exits 8 s after the last tab closes (or 5 min after start if no tab ever opened), with a final safety exit when the Pi session shuts down |
 | Bilingual UI (en / zh) | The agent always picks the page UI language explicitly via the required `ui_lang` tool parameter, chosen from the user's language; an in-page 中/EN switch lets the reader override it (remembered in `localStorage`) |
 | Clean, modern reading experience | Minimal reading layout, paper-texture backgrounds, page progress bar, table of contents with scroll highlighting, code blocks with language label + one-click copy |
@@ -73,8 +77,11 @@ The tool returns the page URL; the agent shares it with the user and moves on �
 
 ```
 /md-preview reports/summary.md
+/md-preview reports/summary.md --host 192.168.1.10   # open the tab at this IP (the server must listen on 0.0.0.0)
 /md-preview              # list documents currently being previewed
 ```
+
+The port and the `?token=` access token are preserved when `--host` rewrites the URL; see [Listening address & access token](#listening-address--access-token).
 
 ### Standalone demo (no Pi session needed)
 
@@ -87,7 +94,7 @@ npm run demo -- --smoke    # headless smoke test: compile, serve, assert, exit
 ## How it works
 
 ```
-Agent writes .md ──► md_preview tool ──► local preview server (127.0.0.1:random port)
+Agent writes .md ──► md_preview tool ──► local preview server (127.0.0.1:random port, token-gated URLs)
                                              │
                  browser tab ◄── auto-open ──┘
                         │  SSE: source change → page auto-refresh
@@ -138,9 +145,31 @@ Pi loads the TypeScript sources directly via jiti — no build step; `tsconfig.j
 
 | Environment variable | Effect |
 | --- | --- |
-| `MD_PREVIEW_HOST` | Bind address, default `127.0.0.1` (safe default; never exposed to the network) |
+| `MD_PREVIEW_HOST` | Bind address, default `127.0.0.1`. Set `0.0.0.0` (or a specific NIC IP) to serve other machines. **Read when the preview server starts (the first preview of the session)**; an env change mid-session needs a pi restart to take effect |
+| `MD_PREVIEW_TOKEN` | Fixed access token, overriding the random URL-safe token generated at startup (useful for a stable remote link). Every page URL carries `?token=` |
 | `MD_PREVIEW_THEME` | Initial theme hint: `system` / `light` / `dark` (only applies until the user picks a theme) |
 | `MD_PREVIEW_LANG` | Fallback UI language: `en` / `zh` (used by the `/md-preview` command; the `md_preview` tool always passes `ui_lang` explicitly) |
+
+### Listening address & access token
+
+The preview HTTP server is private by default: it binds to `127.0.0.1`, and **every** route — the document page, `/prefs`, the SSE stream, `/asset/*` and every `/doc/*` sub-route (events / close / ask / chat / download) — requires the session's access token in the `?token=` query parameter. Local requests are checked too: a missing or wrong token returns `401`. The token is a URL-safe random string generated when the server starts, unless `MD_PREVIEW_TOKEN` pins it.
+
+Every URL the extension prints (tool output, command transcript) already carries the token. Copy and share it in full — dropping the `?token=...` query turns the link into a 401.
+
+To serve other machines, opt in with a reachable bind address and tell the command which IP the tab should open with:
+
+```bash
+MD_PREVIEW_HOST=0.0.0.0 pi
+
+# inside the session
+/md-preview reports/summary.md                     # -> http://127.0.0.1:<port>/doc/<id>?token=…
+/md-preview reports/summary.md --host 192.168.1.10 # -> http://192.168.1.10:<port>/doc/<id>?token=…
+```
+
+- `--host <ip>` only decides which host the browser and the shared URL use; the port and `?token=` always match the server's. It accepts `--host <ip>`, `--host=<ip>` and `--host "<ip>"`, before or after the file path.
+- Binding `0.0.0.0` (or `::`) without `--host` opens the browser at `127.0.0.1` — the local reading view. A remote reader needs `--host <ip-reachable-from-them>` (or the equivalent manual edit) and must keep the `?token=`.
+- A `--host` the bind address does not cover (bound to `127.0.0.1`, asking for a LAN IP) still previews, but the transcript and the UI warning tell you to start pi with `MD_PREVIEW_HOST=0.0.0.0` and restart: the server is a per-session singleton, so an env change mid-session does not rebind an already-running server.
+- A malformed `--host` (missing value, given twice, or a URL such as `http://host`) is rejected with an explicit error and no browser is opened.
 
 ### User-level preference persistence
 
@@ -177,7 +206,8 @@ The reply appears in real time as a card **beside the document** (synced across 
 
 ## Security considerations
 
-- The server binds to loopback only, and the page itself makes no external network requests (no CDN, no external assets).
+- The server binds to loopback by default. **Every route — including requests from the local machine — requires the `?token=` access token**; a missing or wrong token returns `401`. Exposing the server to other machines is opt-in (`MD_PREVIEW_HOST`), and even then access stays token-protected. The page itself makes no external network requests (no CDN, no external assets).
+- The token travels in the URL, so it can appear in browser history and terminal transcripts — that is the deliberate trade-off of a share-the-link design. Pin it with `MD_PREVIEW_TOKEN` when you need a stable, known link; `--host` only changes the host of the opened/shared URL and never relaxes authentication.
 - The mermaid runtime is served same-origin by the preview server (`/mermaid.mjs`), so diagram rendering produces no external requests either.
 - Static assets and link resolution are validated to stay inside (session cwd ∪ previewed document directories); unknown file types return 404, and dangerous types like `text/html` are force-served as `text/plain`.
 - The extension never invokes a shell: opening the browser uses `spawn` (`open` / `xdg-open` / `cmd start`) with immediate `unref`, degrading gracefully to "open the URL manually"; the footer version stamp spawns `git` once per process against the extension root (no shell, cached), silently degrading to hidden on failure.

@@ -109,6 +109,26 @@ const writeDoc = (name, body) => {
 	return file;
 };
 
+/**
+ * Build a `/doc/<id>` sub-route URL for a preview handle.
+ *
+ * `handle.url` already carries `?token=...`, so the old `${handle.url}/events` form appended
+ * the sub-route into the query string and every request came back 401. Rebuild the path from
+ * the handle's doc id, keep the handle's origin (host + port) and re-attach the token; extra
+ * query parameters are joined with `&` by URLSearchParams.
+ */
+function docUrl(handle, sub = "", params) {
+	let url;
+	try {
+		url = new URL(`/doc/${handle.docId}${sub}`, new URL(handle.url).origin);
+	} catch (error) {
+		throw new Error(`i18n-check: preview handle has an unusable url (${JSON.stringify(handle.url)}): ${error.message}`);
+	}
+	url.searchParams.set("token", handle.token);
+	for (const [key, value] of Object.entries(params ?? {})) url.searchParams.set(key, value);
+	return url.toString();
+}
+
 const server = await ensureServer();
 
 /* 1. normalizeUiLang ------------------------------------------------------- */
@@ -163,7 +183,7 @@ const hDefault = await server.openDocument(docC, { cwd: tmpConfig });
 check('new document defaults to "en"', hDefault.uiLang === "en", `got ${JSON.stringify(hDefault.uiLang)}`);
 
 /* 4. Language hot-update + SSE lang --------------------------------------- */
-const sse = await openSse(`${hZh.url}/events?c=i18n-live`);
+const sse = await openSse(docUrl(hZh, "/events", { c: "i18n-live" }));
 await sse.waitFor((text) => text.includes('"lang":"zh"'), 2000);
 check('SSE init carries lang="zh"', sse.text.includes('"lang":"zh"'), sse.text.slice(0, 200));
 
@@ -189,7 +209,7 @@ const hEnAgain = await server.openDocument(docA, { cwd: tmpConfig });
 check('omitted uiLang keeps "en" after the explicit switch', hEnAgain.uiLang === "en", `got ${JSON.stringify(hEnAgain.uiLang)}`);
 await sse.close();
 
-const sseEn = await openSse(`${hZh.url}/events?c=i18n-live-en`);
+const sseEn = await openSse(docUrl(hZh, "/events", { c: "i18n-live-en" }));
 await sseEn.waitFor((text) => text.includes('"lang":"en"'), 2000);
 check('new SSE init carries lang="en" after the switch', sseEn.text.includes('"lang":"en"'), sseEn.text.slice(0, 200));
 await sseEn.close();
@@ -214,7 +234,7 @@ check('empty reply message is "Reply text is empty."', emptyReply.ok === false &
 const orphan = server.answerQuestion("q999", "orphan reply");
 check("unknown question id message is English", orphan.ok === false && orphan.message.includes("No pending question found"), JSON.stringify(orphan));
 
-const askRes = await fetch(`${hEn.url}/ask`, {
+const askRes = await fetch(docUrl(hEn, "/ask"), {
 	method: "POST",
 	headers: { "Content-Type": "application/json" },
 	body: JSON.stringify({ quote: "Doc A", question: "What is this?" }),
@@ -225,7 +245,7 @@ const answered = server.answerQuestion(askData.id, "A **test** answer.");
 check("success message is English", answered.ok === true && answered.message.includes("Answered preview question"), JSON.stringify(answered));
 
 /* 7. serveAsk 400 payload is English -------------------------------------- */
-const badAsk = await fetch(`${hEn.url}/ask`, {
+const badAsk = await fetch(docUrl(hEn, "/ask"), {
 	method: "POST",
 	headers: { "Content-Type": "application/json" },
 	body: JSON.stringify({ quote: "", question: "" }),
@@ -250,63 +270,138 @@ function hanInComments(source) {
  * Han characters in code position: outside comments and outside string /
  * template literals. `${...}` interpolations are scanned as code, so Han inside
  * an interpolation expression is reported while Han inside a literal is not.
+ *
+ * Regex literals are recognised as well, and scanned as code rather than as a
+ * string: without that, the `"` inside something like `/[^\x20-\x7e]/g` opened a
+ * string state that never closed, so Han later in the file was silently missed
+ * while Han inside legitimate string literals was reported. A `/` starts a regex
+ * when the token before it cannot end an expression (an operator or a value-taking
+ * keyword such as `return`); otherwise it is division.
  */
 function hanInCode(source) {
 	const hits = [];
 	const stack = []; // "template" markers for nested ${...} expressions
-	let mode = "code"; // code | line | block | single | double | template
+	let mode = "code"; // code | line | block | single | double | template | regex
 	let line = 1;
 	let i = 0;
+	let prev = ""; // last significant character in code position
+	let word = ""; // identifier currently being read
+	let lastWord = ""; // last completed identifier
+	let regexClass = false; // inside a [...] class of a regex literal
+	const REGEX_AFTER_WORD = new Set(["return", "typeof", "case", "delete", "void", "in", "of", "instanceof", "new", "do", "else", "yield", "await"]);
+	const REGEX_AFTER_CHAR = new Set(["", "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%", "<", ">", "~", "^"]);
+	const isWordChar = (ch) => /[A-Za-z0-9_$]/.test(ch);
+	const endWord = () => {
+		if (word) lastWord = word;
+		word = "";
+	};
+	const startsRegex = () => REGEX_AFTER_WORD.has(lastWord) || REGEX_AFTER_CHAR.has(prev);
 	while (i < source.length) {
 		const ch = source[i];
 		const next = source[i + 1];
 		if (ch === "\n") line++;
 		if (mode === "line") {
-			if (ch === "\n") mode = "code";
+			if (ch === "\n") {
+				mode = "code";
+				prev = "";
+				endWord();
+			}
 			i++;
 		} else if (mode === "block") {
 			if (ch === "*" && next === "/") {
 				mode = "code";
+				prev = "";
+				endWord();
 				i += 2;
 			} else i++;
 		} else if (mode === "single" || mode === "double") {
 			if (ch === "\\") i += 2;
 			else {
-				if (ch === (mode === "single" ? "'" : '"')) mode = "code";
+				if (ch === (mode === "single" ? "'" : '"')) {
+					mode = "code";
+					prev = ")";
+					endWord();
+				}
 				i++;
 			}
 		} else if (mode === "template") {
 			if (ch === "\\") i += 2;
 			else if (ch === "`") {
 				mode = stack.pop() ?? "code";
+				prev = ")";
+				endWord();
 				i++;
 			} else if (ch === "$" && next === "{") {
 				stack.push("template");
 				mode = "code";
+				prev = "";
+				endWord();
 				i += 2;
 			} else i++;
+		} else if (mode === "regex") {
+			if (ch === "\\") i += 2;
+			else if (ch === "[") {
+				regexClass = true;
+				i++;
+			} else if (ch === "]") {
+				regexClass = false;
+				i++;
+			} else if (ch === "/" && !regexClass) {
+				mode = "code";
+				prev = ")";
+				endWord();
+				i++;
+				// Consume the flag letters so `/g` never leaks into code position.
+				while (i < source.length && /[A-Za-z]/.test(source[i])) i++;
+			} else {
+				if (HAN.test(ch)) hits.push({ line, char: ch });
+				i++;
+			}
 		} else if (ch === "/" && next === "/") {
 			mode = "line";
 			i += 2;
 		} else if (ch === "/" && next === "*") {
 			mode = "block";
 			i += 2;
+		} else if (ch === "/" && startsRegex()) {
+			mode = "regex";
+			regexClass = false;
+			prev = "";
+			endWord();
+			i++;
 		} else if (ch === "'") {
 			mode = "single";
+			prev = "";
+			endWord();
 			i++;
 		} else if (ch === '"') {
 			mode = "double";
+			prev = "";
+			endWord();
 			i++;
 		} else if (ch === "`") {
 			stack.push("code");
 			mode = "template";
+			prev = "";
+			endWord();
 			i++;
 		} else if (ch === "}" && stack[stack.length - 1] === "template") {
 			stack.pop();
 			mode = "template";
+			prev = "";
+			endWord();
+			i++;
+		} else if (/\s/.test(ch)) {
+			endWord();
+			i++;
+		} else if (isWordChar(ch)) {
+			word += ch;
+			prev = ch;
 			i++;
 		} else {
 			if (HAN.test(ch)) hits.push({ line, char: ch });
+			prev = ch;
+			endWord();
 			i++;
 		}
 	}

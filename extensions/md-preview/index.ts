@@ -20,6 +20,15 @@ import type { UiLang } from "./prefs";
 
 type Notify = (message: string, type?: "info" | "warning" | "error") => void;
 
+/** Best-effort notification: the session (or its UI) may already be gone. */
+function notifySafely(notify: Notify | undefined, message: string, type?: "info" | "warning" | "error"): void {
+	try {
+		notify?.(message, type);
+	} catch {
+		/* notification is best-effort */
+	}
+}
+
 /**
  * Session messenger injected by the extension factory; it delivers a preview-page
  * question into the pi session. A follow-up is delivered immediately when the
@@ -138,12 +147,88 @@ interface PreviewOutcome {
 	opened?: boolean;
 	/** UI language that actually took effect for the document. */
 	uiLang?: UiLang;
+	/** Non-fatal hint, e.g. the requested browser host is likely not covered by the bind address. */
+	warning?: string;
+}
+
+/** Parsed `/md-preview` arguments: the file path (may contain spaces) plus an optional --host override. */
+export interface PreviewArgs {
+	file: string;
+	host?: string;
+	error?: string;
+}
+
+/** Matches `--host <value>` / `--host=<value>` / `--host "value"` anywhere in the line. */
+const HOST_FLAG_RE = /(^|\s)--host(?=$|[\s=])(?:=|\s+)?("[^"]*"|'[^']*'|\S*)/;
+
+/**
+ * Parse `/md-preview` arguments.
+ *
+ * The `--host` fragment is cut out of the raw line and everything else is taken verbatim as the
+ * file path, so paths containing spaces keep working and the legacy `/md-preview <file>` form is
+ * unchanged. Errors are explicit: a malformed `--host` never silently previews the wrong target.
+ */
+export function parsePreviewArgs(raw: string): PreviewArgs {
+	let rest = raw;
+	let host: string | undefined;
+	const m = HOST_FLAG_RE.exec(rest);
+	if (m) {
+		const value = (m[2] ?? "").replace(/^["']|["']$/g, "");
+		if (!value || value.startsWith("-")) {
+			return { file: "", error: "`--host` requires an IP or hostname, e.g. `/md-preview report.md --host 192.168.1.10`." };
+		}
+		if (value.includes("/")) {
+			return { file: "", error: `\`--host\` expects a bare IP or hostname, not \`${value}\` (no scheme / path / port).` };
+		}
+		host = value;
+		rest = rest.slice(0, m.index) + rest.slice(m.index + m[0].length); // remove only the flag; the remainder is the file path
+		if (HOST_FLAG_RE.test(rest)) return { file: "", error: "`--host` was given more than once." };
+	}
+	return { file: rest.trim(), host };
+}
+
+/** Rewrite only the host of a preview URL; port and query (including `?token=`) are preserved. */
+export function withUrlHost(url: string, host: string): string {
+	try {
+		const u = new URL(url);
+		u.hostname = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host; // IPv6 literal -> [::1]
+		return u.toString();
+	} catch {
+		return url; // unparseable URL: hand back what the server produced instead of throwing mid-preview
+	}
+}
+
+/** A wildcard bind address is not browsable: open the browser on loopback instead. */
+export function localBrowserHost(host: string): string {
+	return host === "0.0.0.0" || host === "::" || host === "[::]" || host === "" ? "127.0.0.1" : host;
+}
+
+/** True when the browser-target host is probably not covered by the server's bind address. */
+export function needsHostWarning(listenHost: string, targetHost: string): boolean {
+	const wildcard = (h: string) => h === "0.0.0.0" || h === "::" || h === "[::]";
+	const loopback = (h: string) => h === "127.0.0.1" || h === "localhost" || h === "::1";
+	if (wildcard(listenHost)) return false; // listening on every interface: any target is reachable
+	if (targetHost === listenHost) return false; // exactly the bind address
+	if (loopback(targetHost) && loopback(listenHost)) return false; // local -> local
+	return true; // bound to 127.0.0.1 but opening a LAN IP, or a different bound IP
+}
+
+/**
+ * Explain a host mismatch. Must keep three points explicit: the current bind, the
+ * MD_PREVIEW_HOST=0.0.0.0 fix (needs a restart) and the per-session singleton semantics.
+ */
+function hostMismatchWarning(listenHost: string, targetHost: string, port: number): string {
+	return (
+		`the preview server is listening on ${listenHost} only, so http://${targetHost}:${port}/... may not be reachable. ` +
+		`Set MD_PREVIEW_HOST=0.0.0.0 (or MD_PREVIEW_HOST=${targetHost}) and restart pi to serve that address. ` +
+		"The preview server is a per-session singleton: it keeps its original bind even if MD_PREVIEW_HOST changes mid-session - the new value only takes effect after a restart."
+	);
 }
 
 /** Shared by the `md_preview` tool and the `/md-preview` command. */
 async function previewMarkdown(
 	file: string,
-	opts: { cwd: string; title?: string; uiLang?: UiLang; open?: boolean; notify?: Notify },
+	opts: { cwd: string; title?: string; uiLang?: UiLang; open?: boolean; notify?: Notify; host?: string },
 ): Promise<PreviewOutcome> {
 	const abs = path.isAbsolute(file) ? path.normalize(file) : path.resolve(opts.cwd, file);
 	let stat: fs.Stats;
@@ -157,6 +242,7 @@ async function previewMarkdown(
 	}
 
 	const server = await ensureServer({
+		host: process.env.MD_PREVIEW_HOST?.trim() || undefined, // explicit: same precedence as the contract chain
 		onShutdown: (reason) => {
 			try {
 				opts.notify?.(`Markdown preview: ${reason}`, "info");
@@ -169,13 +255,15 @@ async function previewMarkdown(
 	server.onAsk = (qa) => sessionMessenger?.(qa.chat ? formatChatMessage(qa) : formatAskMessage(qa));
 	const handle = await server.openDocument(abs, { cwd: opts.cwd, title: opts.title, uiLang: opts.uiLang });
 
+	// One page URL drives the browser, the transcript and details.url (never mix hosts).
+	const targetHost = opts.host ?? localBrowserHost(server.host);
+	const pageUrl = withUrlHost(handle.url, targetHost);
+
 	const tabAlreadyOpen = handle.liveViewers > 0;
-	const opened = !tabAlreadyOpen && opts.open !== false ? openBrowser(handle.url) : false;
-	try {
-		opts.notify?.(`Markdown preview is ready: ${handle.title}`, "info");
-	} catch {
-		/* notification is best-effort */
-	}
+	const opened = !tabAlreadyOpen && opts.open !== false ? openBrowser(pageUrl) : false;
+	const warning = needsHostWarning(server.host, targetHost) ? hostMismatchWarning(server.host, targetHost, handle.port) : undefined;
+	if (warning) notifySafely(opts.notify, `Markdown preview: ${warning}`, "warning");
+	notifySafely(opts.notify, `Markdown preview is ready: ${handle.title}`, "info");
 
 	const browserLine = tabAlreadyOpen
 		? "Reusing the already-open preview tab (file updates sync automatically)"
@@ -186,17 +274,19 @@ async function previewMarkdown(
 	return {
 		ok: true,
 		opened,
-		url: handle.url,
+		url: pageUrl,
 		uiLang: handle.uiLang,
+		warning,
 		text: [
 			`Markdown preview is ready: **${handle.title}**`,
-			`- Page URL: <${handle.url}>`,
+			`- Page URL: <${pageUrl}>`,
 			`- Source file: \`${abs}\``,
 			`- Browser: ${browserLine}`,
 			`- Live sync: the page refreshes automatically when the file changes; no need to call this tool again`,
 			`- Auto-exit: the preview server stops once the user closes the browser tab, so you do not need to keep working or poll its status`,
+			...(warning ? [`- Warning: ${warning}`] : []),
 			``,
-			`Share the page URL with the user so they can read it, then continue with your other work.`,
+			"Share the page URL with the user exactly as returned - it carries a required `?token=` access token - then continue with your other work.",
 		].join("\n"),
 	};
 }
@@ -208,13 +298,14 @@ const mdPreviewTool = defineTool({
 		"Render a Markdown file as a professionally typeset web page and open a browser tab for the user to read. " +
 		"Mandatory trigger rule: whenever the output you are about to produce is structured content (a report, research findings, a design document, a README, a multi-paragraph/multi-section article, a table, a list, a code example, etc.) and is longer than 150 characters, you must first write it to a .md file and then call this tool to present it; never output it only in the terminal. " +
 		"The page ships with table-of-contents navigation, code highlighting, light/dark modes, and font-size controls; " +
-		"the page refreshes automatically after the source file is modified. The tool returns immediately and you do not need to keep working afterwards: the preview server exits automatically once the user closes the tab.",
+		"the page refreshes automatically after the source file is modified. The tool returns immediately and you do not need to keep working afterwards: the preview server exits automatically once the user closes the tab. The returned page URL carries a required `?token=` access token; share it in full.",
 	promptSnippet: "md_preview: mandatory when the output is structured content longer than 150 characters — write the .md file first, then present it as a web page in the browser",
 	promptGuidelines: [
 		"Mandatory rule: when the output is structured content (a report, a document, multi-paragraph/multi-section text, a table, a list, a code example, etc.) longer than 150 characters, you must write it to a .md file and call md_preview to present it in the browser; never output it only in the terminal, and do not hesitate or downgrade to a plain-text reply.",
 		"When presenting a long report or Markdown document that the user needs to read carefully, write it to a .md file and call md_preview to present it in the browser instead of only printing it in the terminal.",
 		"ui_lang is REQUIRED on every call — never omit it: choose it based on the user's language (\"zh\" when the user communicates in Chinese, otherwise \"en\").",
 		"After md_preview returns, share the page URL with the user and continue with your other work; do not wait for the user to close the page, and do not call the tool repeatedly just to refresh the page.",
+		"The page URL returned by md_preview carries a required `?token=` access token: share it exactly as returned - never truncate it, and never strip or rewrite the query string, or the user will get a 401 error instead of the page.",
 	],
 	parameters: Type.Object({
 		file: Type.String({
@@ -296,6 +387,7 @@ const mdPreviewReplyTool = defineTool({
 
 /** Complete `/md-preview` with Markdown files under the current working directory. */
 function completeMarkdownFiles(prefix: string): { value: string; label: string }[] | null {
+	if (prefix.startsWith("-")) return null; // typing --host: do not offer file completions
 	const cwd = process.cwd();
 	const dir = prefix.includes("/") ? path.dirname(prefix) : ".";
 	const base = prefix.includes("/") ? path.basename(prefix) : prefix;
@@ -331,12 +423,22 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 	pi.registerTool(mdPreviewReplyTool);
 
 	pi.registerCommand("md-preview", {
-		description: "Render and preview a Markdown file in the web UI: /md-preview <file path>",
+		description: "Render and preview a Markdown file in the web UI: /md-preview <file path> [--host <ip>]",
 		getArgumentCompletions: completeMarkdownFiles,
 		handler: async (args, ctx) => {
-			const file = args.trim();
+			const parsed = parsePreviewArgs(args);
 			const notify: Notify = (message, type) => ctx.ui.notify(message, type);
-			if (!file) {
+			if (parsed.error) {
+				// Explicit error, no browser: never preview the wrong target because of a typo.
+				pi.sendMessage({
+					customType: "md_preview",
+					display: true,
+					content: [`Invalid \`/md-preview\` arguments: ${parsed.error}`, ``, `Usage: \`/md-preview <file path> [--host <ip>]\``].join("\n"),
+				});
+				notifySafely(notify, `Markdown preview: ${parsed.error}`, "error");
+				return;
+			}
+			if (!parsed.file) {
 				const docs = currentServer()?.listDocuments() ?? [];
 				const list = docs.length
 					? docs.map((d) => `- ${d.title} (${d.filePath}, ${d.viewers} tab(s))`).join("\n")
@@ -344,11 +446,17 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 				pi.sendMessage({
 					customType: "md_preview",
 					display: true,
-					content: `Usage: \`/md-preview <file path>\`\n\nCurrent previews:\n${list}`,
+					content: [
+						"Usage: `/md-preview <file path> [--host <ip>]`",
+						"",
+						"`--host <ip>` opens the browser tab at that IP instead of the bind address, e.g. `/md-preview reports/summary.md --host 192.168.1.10`. The port and the `?token=` access token are preserved. The preview server must listen on an address that covers that IP: start pi with `MD_PREVIEW_HOST=0.0.0.0` (the bind address is fixed for the whole session, so a restart is required).",
+						"",
+						`Current previews:\n${list}`,
+					].join("\n"),
 				});
 				return;
 			}
-			const outcome = await previewMarkdown(file, { cwd: ctx.cwd, notify });
+			const outcome = await previewMarkdown(parsed.file, { cwd: ctx.cwd, notify, host: parsed.host });
 			pi.sendMessage({ customType: "md_preview", display: true, content: outcome.text });
 		},
 	});

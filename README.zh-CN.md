@@ -2,6 +2,10 @@
 
 [English](README.md) | 简体中文
 
+[![npm version](https://img.shields.io/npm/v/pi-md-preview)](https://www.npmjs.com/package/pi-md-preview)
+[![npm downloads](https://img.shields.io/npm/dm/pi-md-preview)](https://www.npmjs.com/package/pi-md-preview)
+[![license](https://img.shields.io/npm/l/pi-md-preview)](LICENSE)
+
 一个 [Pi](https://github.com/earendil-works/pi-coding-agent) 扩展：把 Agent 编写的 Markdown 文件渲染成专业、简洁、现代的 Web 页面，并在浏览器中呈现给用户阅读。
 
 面向「结构化内容呈现」场景——**只要 Agent 要输出的内容是结构化内容（报告、文档、多段落/多小节、表格、列表、代码示例等），且字符数大于 150，就必须调用本扩展**：写好 `.md` 文件后调用一次工具，浏览器自动打开排版好的页面；之后 Agent 无需保持工作，用户关闭标签页，预览服务自动退出。
@@ -12,7 +16,7 @@
 | --- | --- |
 | Web 页面渲染 Markdown | 自研零依赖 Markdown 渲染器（GFM 风格）：标题、表格、围栏代码（25+ 语言高亮）、引用块（含 `[!NOTE]` 提示框）、任务列表、脚注、图片、自动链接 |
 | Mermaid 图表 | `mermaid` 语言围栏代码块渲染为图表：前端动态加载预览服务同源提供的 mermaid 运行时，自动绘制流程图、时序图等 |
-| Agent 主动呈现 + 自动开浏览器 | `md_preview` 工具：本地起服务 → 自动用系统默认浏览器打开标签页（macOS `open` / Linux `xdg-open` / Windows `start`），跨标签页去重（已打开则复用） |
+| Agent 主动呈现 + 自动开浏览器 | `md_preview` 工具：本地起服务 → 自动用系统默认浏览器打开标签页（macOS `open` / Linux `xdg-open` / Windows `start`），跨标签页去重（已打开则复用）；`/md-preview <file> --host <ip>` 可指定标签页打开的 IP |
 | Agent 无需保持工作 | 工具立即返回；预览服务独立运行。用户关闭全部标签页 8 秒后（或浏览器标签从未打开 5 分钟后）服务自动退出；Pi 会话结束时兜底退出 |
 | 双语界面（中 / 英） | Agent 启动预览时通过必填的 `ui_lang` 工具参数显式选择页面 UI 语言（根据用户语言选定）；页面右上角提供 中/EN 切换控件，读者可随时覆盖（`localStorage` 记忆） |
 | 界面专业简洁现代 | 极简阅读版式、纸面纹理背景、页面进度条、目录导航（滚动高亮）、代码块「语言标签 + 一键复制」 |
@@ -73,8 +77,11 @@ pi --extension ./extensions/md-preview/index.ts
 
 ```
 /md-preview reports/summary.md
+/md-preview reports/summary.md --host 192.168.1.10   # 以该 IP 打开标签页（服务需监听 0.0.0.0）
 /md-preview              # 列出当前预览中的文档
 ```
+
+`--host` 只替换打开/分享 URL 的 host，端口与 `?token=` 访问令牌原样保留，详见下文「监听地址与访问 Token」。
 
 ### 独立 Demo（无需 Pi 会话）
 
@@ -87,7 +94,7 @@ npm run demo -- --smoke    # 无头冒烟测试：编译、起服务、断言渲
 ## 工作机制
 
 ```
-Agent 写 .md ──► md_preview 工具 ──► 本地预览服务（127.0.0.1:随机端口）
+Agent 写 .md ──► md_preview 工具 ──► 本地预览服务（127.0.0.1:随机端口，URL 带 token 鉴权）
                                         │
                  浏览器标签页 ◄── 自动打开 ┘
                         │  SSE：源文件变更 → 页面自动刷新
@@ -138,9 +145,31 @@ Pi 通过 jiti 直接加载 TypeScript 源码，无需构建步骤；`tsconfig.j
 
 | 环境变量 | 作用 |
 | --- | --- |
-| `MD_PREVIEW_HOST` | 绑定地址，默认 `127.0.0.1`（安全默认，不对外网开放） |
+| `MD_PREVIEW_HOST` | 绑定地址，默认 `127.0.0.1`。设为 `0.0.0.0`（或具体网卡 IP）可供其他机器访问。**在预览服务启动时（会话首次预览）读取**；会话中途改动需重启 pi 会话才生效 |
+| `MD_PREVIEW_TOKEN` | 固定访问令牌，覆盖启动时生成的随机 URL-safe token（便于远程使用固定链接）；所有页面 URL 均携带 `?token=` |
 | `MD_PREVIEW_THEME` | 初始主题提示 `system` / `light` / `dark`（仅在用户未手动选择主题前生效） |
 | `MD_PREVIEW_LANG` | 兜底 UI 语言 `en` / `zh`（供 `/md-preview` 命令使用；`md_preview` 工具始终显式传 `ui_lang`） |
+
+### 监听地址与访问 Token
+
+预览 HTTP 服务默认私有：只绑定 `127.0.0.1`，且**所有**路由——文档页面、`/prefs`、SSE 流、`/asset/*` 以及全部 `/doc/*` 子路由（events / close / ask / chat / download）——都必须携带本次会话的访问令牌（query 参数 `?token=`）。**本地请求同样校验**：缺令牌或令牌错误一律返回 `401`。令牌在服务启动时随机生成（URL-safe），也可用 `MD_PREVIEW_TOKEN` 固定。
+
+扩展打印的所有 URL（工具返回、命令输出）都已带令牌，复制分享时请完整保留——**删掉 `?token=...` 会直接 401**。
+
+要让其他机器访问，先显式绑定可达地址，再用命令指定浏览器打开的 IP：
+
+```bash
+MD_PREVIEW_HOST=0.0.0.0 pi
+
+# 会话内
+/md-preview reports/summary.md                     # -> http://127.0.0.1:<端口>/doc/<id>?token=…
+/md-preview reports/summary.md --host 192.168.1.10 # -> http://192.168.1.10:<端口>/doc/<id>?token=…
+```
+
+- `--host <ip>` 只决定浏览器与该分享 URL 使用哪个 host；端口与 `?token=` 始终与服务端一致。支持 `--host <ip>`、`--host=<ip>`、`--host "<ip>"` 三种写法，放在文件名前后均可。
+- 绑定 `0.0.0.0`（或 `::`）且未指定 `--host` 时，浏览器以 `127.0.0.1` 打开（本地阅读视角）；远程读者需 `--host <对端可达的 IP>`（或自行替换 IP），并保留 `?token=`。
+- `--host` 指定的地址不在监听范围内（例如监听 `127.0.0.1` 却要求局域网 IP）时仍会预览，但命令输出与通知会给出警告，提示用 `MD_PREVIEW_HOST=0.0.0.0` 重启 pi：预览服务是**会话级单例**，中途改环境变量不会让已在运行的服务重新绑定。
+- `--host` 写法错误（缺值、重复，或写成 `http://host` 这类 URL）会直接报错，**不会打开浏览器**。
 
 ### 用户级偏好持久化
 
@@ -177,7 +206,8 @@ Pi 通过 jiti 直接加载 TypeScript 源码，无需构建步骤；`tsconfig.j
 
 ## 安全考量
 
-- 服务只绑定回环地址，页面自身不发起任何外部网络请求（无 CDN、无外链资源）。
+- 服务默认只绑定回环地址。**所有路由（包括本机发起的请求）都必须携带 `?token=` 访问令牌**，缺失或错误一律 401。对外开放是显式 opt-in（`MD_PREVIEW_HOST`），且即使开放仍需令牌；页面自身不发起任何外部网络请求（无 CDN、无外链资源）。
+- 令牌随 URL 进入浏览器历史与终端记录——这是「链接即凭证」设计固有的取舍；需要固定已知链接时用 `MD_PREVIEW_TOKEN` 固定。`--host` 只改变打开/分享 URL 的 host，**不放宽任何鉴权**。
 - Mermaid 图表运行时由预览服务同源提供（`/mermaid.mjs`），图表渲染不产生任何外部请求。
 - 静态资源与链接解析均校验路径必须落在（会话工作目录 ∪ 预览文档目录）之内；未知文件类型返回 404，`text/html` 等危险类型强制以 `text/plain` 提供。
 - 扩展执行不调用 shell：打开浏览器走 `spawn`（`open` / `xdg-open` / `cmd start`）并立即 `unref`，失败时仅降级为「请手动访问地址」；页脚版本号仅在首次渲染时向扩展根目录 `spawn` 一次 `git`（不经 shell，每进程缓存），失败时静默降级为不显示。

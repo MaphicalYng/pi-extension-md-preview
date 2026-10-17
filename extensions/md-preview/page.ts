@@ -52,6 +52,12 @@ export interface PageOptions {
 	askUrl?: string;
 	/** POST endpoint for bottom chat messages (body { message }); omitted = no chat area rendered. */
 	chatUrl?: string;
+	/**
+	 * Same-origin URL of the bundled mermaid ESM runtime. The server appends the
+	 * auth token as a query parameter; omitted/empty falls back to "/mermaid.mjs"
+	 * so the module stays compilable and demonstrable standalone.
+	 */
+	mermaidUrl?: string;
 	/** Existing Q&A entries embedded at render time so cards survive reloads. */
 	qa?: PageQaEntry[];
 	/** Footer version stamp (e.g. 2026-10-13 · 9311172); omitted = no version in the footer. */
@@ -1379,6 +1385,63 @@ const PAGE_JS = `
 		}
 	});
 
+	/* ---------- auth failure (the server rejects a missing/invalid token) ---------- */
+
+	// Auth copy is inline: page.ts must stay free of non-ASCII literals (the
+	// scripts/page-i18n-check.mjs gate asserts that) and page-i18n.ts has no key
+	// for it yet. tx() prefers a future STRINGS key named exactly like these
+	// fields and only falls back to this dict; the zh side spells CJK as unicode
+	// escapes so this source file and the emitted inline script stay pure ASCII.
+	var AUTH_TEXT = {
+		en: {
+			authFailToast: "Authentication failed: the token in this link is invalid or has expired",
+			authFailLiveText: "Auth failed",
+			authFailLiveTitle: "The access token was rejected; reopen the preview from pi for a fresh link",
+		},
+		zh: {
+			authFailToast: "\\u9274\\u6743\\u5931\\u8d25\\uff1a\\u94fe\\u63a5\\u4e2d\\u7684 token \\u65e0\\u6548\\u6216\\u5df2\\u8fc7\\u671f",
+			authFailLiveText: "\\u9274\\u6743\\u5931\\u8d25",
+			authFailLiveTitle: "\\u8bbf\\u95ee\\u53d7\\u9650\\uff1atoken \\u88ab\\u62d2\\u7edd\\uff0c\\u8bf7\\u4ece pi \\u91cd\\u65b0\\u6253\\u5f00\\u9884\\u89c8\\u9875\\u9762\\u83b7\\u53d6\\u65b0\\u94fe\\u63a5",
+		},
+	};
+
+	// STRINGS first (so a later page-i18n.ts key wins without touching this file),
+	// inline dict second; reads the current lang so an in-page switch re-translates.
+	function tx(key) {
+		if (T[key]) return T[key];
+		var pack = lang === "zh" ? AUTH_TEXT.zh : AUTH_TEXT.en;
+		return pack[key] || "";
+	}
+	function isAuthStatus(s) { return s === 401 || s === 403; }
+
+	// Sticky by design: one clear message beats one toast per failing request, and a
+	// rejected token cannot become valid again without reopening the link.
+	var authFailed = false;
+	function authFail() {
+		if (authFailed) return;
+		authFailed = true;
+		setLive("auth");
+		toast(tx("authFailToast"));
+	}
+	function markAuthFromResponse(res) {
+		if (res && isAuthStatus(res.status)) { authFail(); return true; }
+		return false;
+	}
+
+	// probeAuth: one short GET on the SSE endpoint, aborted right after the headers.
+	// EventSource error events carry no status code, so this is the only way to tell
+	// a rejected token (401/403) from a transient disconnect on a fatal connection.
+	function probeAuth() {
+		if (!window.fetch || !window.AbortController) { authFail(); return; }
+		var ctrl = new AbortController();
+		fetch(DOC.updateUrl, { signal: ctrl.signal }).then(function (res) {
+			ctrl.abort();
+			if (isAuthStatus(res.status)) authFail(); else setLive("down");
+		}).catch(function () {
+			setLive("down");   // a network error is not an auth error
+		});
+	}
+
 	/* ---------- user-level prefs (server-side, cross-session) ---------- */
 
 	var prefsUrl = DOC.prefsUrl || "";
@@ -1391,7 +1454,9 @@ const PAGE_JS = `
 		prefsPending = null;
 		try {
 			if (window.fetch) {
-				window.fetch(prefsUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: body, keepalive: true }).catch(function () {});
+				window.fetch(prefsUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: body, keepalive: true })
+					.then(function (res) { markAuthFromResponse(res); })
+					.catch(function () {});
 			} else if (navigator.sendBeacon) {
 				navigator.sendBeacon(prefsUrl, new Blob([body], { type: "application/json" }));
 			}
@@ -1776,7 +1841,11 @@ const PAGE_JS = `
 		}
 	}
 
-	/* ---------- mermaid diagrams (lazy-load same-origin /mermaid.mjs, fully offline) ---------- */
+	/* ---------- mermaid diagrams (lazy-load the injected same-origin runtime, fully offline) ---------- */
+
+	// The server-injected URL carries ?token=; the bare path is the standalone
+	// fallback used when the server does not pass mermaidUrl at all.
+	var mermaidUrl = DOC.mermaidUrl || "/mermaid.mjs";
 
 	var mermaidPromise = null;
 	var mermaidSeq = 0;      // mermaid.render requires a unique id on every call
@@ -1785,7 +1854,7 @@ const PAGE_JS = `
 	// Called only when the document contains pre.mermaid; a failed load clears the cache so the next call retries.
 	function loadMermaid() {
 		if (!mermaidPromise) {
-			mermaidPromise = import("/mermaid.mjs").catch(function (e) {
+			mermaidPromise = import(mermaidUrl).catch(function (e) {
 				mermaidPromise = null;
 				throw e;
 			});
@@ -1890,6 +1959,11 @@ const PAGE_JS = `
 			livePill.classList.remove("down");
 			livePill.title = T.liveSyncTitle;
 			livePill.querySelector(".live-text").textContent = T.liveSyncText;
+		} else if (state === "auth") {
+			// Token rejected: the pill keeps the reason visible after the toast fades.
+			livePill.classList.add("down");
+			livePill.title = tx("authFailLiveTitle");
+			livePill.querySelector(".live-text").textContent = tx("authFailLiveText");
 		} else {
 			livePill.classList.add("down");
 			livePill.title = T.liveDownTitle;
@@ -1921,8 +1995,23 @@ const PAGE_JS = `
 
 	if (DOC.updateUrl && window.EventSource) {
 		var es = new EventSource(DOC.updateUrl);
-		es.onopen = function () { setLive("live"); };
-		es.onerror = function () { setLive("down"); };
+		var esOpened = false;
+		var esErrors = 0;
+		var esAuthProbed = false;
+		es.onopen = function () { esOpened = true; esErrors = 0; setLive("live"); };
+		es.onerror = function () {
+			esErrors++;
+			// Fatal (readyState 2 / CLOSED): EventSource refuses to retry, which is how a
+			// 401 or 403 from the token check surfaces. The error event has no status
+			// code, so confirm with one probe request before blaming the token. Some
+			// browsers keep retrying even on 4xx: probe too after a few consecutive
+			// failures without a single successful open.
+			if (es.readyState === 2 || (!esOpened && esErrors >= 3)) {
+				if (!esAuthProbed) { esAuthProbed = true; probeAuth(); }
+				return;
+			}
+			setLive("down");   // retryable: the pill says disconnected, onopen restores it
+		};
 		es.addEventListener("update", function (e) {
 			try { applyUpdate(JSON.parse(e.data)); } catch (err) { /* ignore malformed frames */ }
 		});
@@ -2261,6 +2350,7 @@ const PAGE_JS = `
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ quote: quote, question: q }),
 			}).then(function (res) {
+				if (markAuthFromResponse(res)) throw new Error("auth");
 				if (!res.ok) throw new Error("http " + res.status);
 				return res.json();
 			}).then(function (data) {
@@ -2270,7 +2360,7 @@ const PAGE_JS = `
 				toast(T.qaAskToast);
 			}).catch(function () {
 				pendingSubmit = null;
-				toast(T.qaAskFailToast);
+				toast(authFailed ? tx("authFailToast") : T.qaAskFailToast);
 			}).then(function () {
 				panelInput.disabled = false;
 			});
@@ -2419,6 +2509,7 @@ const PAGE_JS = `
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ message: msg }),
 		}).then(function (res) {
+			if (markAuthFromResponse(res)) throw new Error("auth");
 			if (!res.ok) throw new Error("http " + res.status);
 			return res.json();
 		}).then(function (data) {
@@ -2438,7 +2529,7 @@ const PAGE_JS = `
 		}).catch(function () {
 			// Restore the draft so the message is not lost.
 			chatText.value = msg;
-			toast(T.chatFailToast);
+			toast(authFailed ? tx("authFailToast") : T.chatFailToast);
 		});
 	}
 
@@ -2512,6 +2603,7 @@ const PAGE_JS = `
 
 	function imageToDataUrl(src) {
 		return fetch(src, { credentials: "same-origin" }).then(function (res) {
+			if (markAuthFromResponse(res)) throw new Error("auth");
 			if (!res.ok) throw new Error("http " + res.status);
 			return res.blob();
 		}).then(function (blob) {
@@ -2683,10 +2775,10 @@ function icon(name: string): string {
 }
 
 export function renderPage(options: PageOptions): string {
-	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefLineHeight, prefBg, downloadUrl, prefsUrl, askUrl, chatUrl, qa, version } = options;
+	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefLineHeight, prefBg, downloadUrl, prefsUrl, askUrl, chatUrl, mermaidUrl, qa, version } = options;
 	const lang = normalizeLang(options.lang);
 	const t = STRINGS[lang];
-	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, chatUrl: chatUrl ?? null, qa: qa ?? [], downloadUrl: downloadUrl ?? null, lang, i18n: STRINGS }).replace(/</g, "\\u003c");
+	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, chatUrl: chatUrl ?? null, mermaidUrl: mermaidUrl ?? null, qa: qa ?? [], downloadUrl: downloadUrl ?? null, lang, i18n: STRINGS }).replace(/</g, "\\u003c");
 	const hintAttr = themeHint ? ` data-theme-hint="${escapeHtml(themeHint)}"` : "";
 	const scaleAttr = typeof prefScale === "number" && isFinite(prefScale) ? ` data-pref-scale="${prefScale}"` : "";
 	const lineHeightAttr = typeof prefLineHeight === "number" && isFinite(prefLineHeight) ? ` data-pref-line-height="${prefLineHeight}"` : "";

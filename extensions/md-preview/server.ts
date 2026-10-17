@@ -11,6 +11,7 @@
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { renderMarkdown, escapeHtml, type RenderedDoc, type TocItem } from "./render";
 import { renderPage } from "./page";
@@ -22,7 +23,7 @@ const SWEEP_MS = 3_000;
 const HEARTBEAT_MS = 25_000;
 
 export interface PreviewHandle {
-	/** Full URL of the rendered page. */
+	/** Full URL of the rendered page (always carries `?token=...`). */
 	url: string;
 	docId: string;
 	title: string;
@@ -33,6 +34,13 @@ export interface PreviewHandle {
 	port: number;
 	/** UI language this document is rendered with. */
 	uiLang: UiLang;
+	/**
+	 * Host embedded in `url`: the bound address, or 127.0.0.1 when the server binds a
+	 * wildcard (0.0.0.0 / ::). Replace it to build a LAN URL.
+	 */
+	host: string;
+	/** Access token every route requires (`?token=...`). */
+	token: string;
 }
 
 interface DocState {
@@ -190,10 +198,10 @@ const CONTENT_TYPES: Record<string, string> = {
 	js: "text/javascript; charset=utf-8",
 };
 
-// page.ts (module B) adds `lang` to PageOptions later; declaring the extra field
-// here keeps both modules type-checking independently. Intersections are
+// page.ts (module B) adds `lang` and `mermaidUrl` to PageOptions later; declaring the extra
+// fields here keeps both modules type-checking independently. Intersections are
 // idempotent, so this stays valid after module B lands.
-type RenderPageArgs = Parameters<typeof renderPage>[0] & { lang?: UiLang; chatUrl?: string };
+type RenderPageArgs = Parameters<typeof renderPage>[0] & { lang?: UiLang; chatUrl?: string; mermaidUrl?: string };
 
 export class PreviewServer {
 	private server: http.Server;
@@ -215,9 +223,15 @@ export class PreviewServer {
 	private qa = new Map<string, QaEntry>();
 	private qaSeq = 0;
 	port = 0;
+	/** Address actually bound by `listen()`: may be a wildcard such as 0.0.0.0, unlike `PreviewHandle.host`. */
+	readonly host: string;
+	/** Per-server access token every route requires (`?token=...`). */
+	readonly token: string;
 
-	constructor(onShutdown?: (reason: string) => void) {
+	constructor(onShutdown?: (reason: string) => void, host = "127.0.0.1") {
 		this.onShutdown = onShutdown;
+		this.host = host;
+		this.token = resolveToken();
 		this.server = http.createServer((req, res) => {
 			this.handle(req, res).catch((err) => {
 				try {
@@ -234,7 +248,7 @@ export class PreviewServer {
 	async start(): Promise<void> {
 		await new Promise<void>((resolve, reject) => {
 			this.server.once("error", reject);
-			this.server.listen(0, "127.0.0.1", () => {
+			this.server.listen(0, this.host, () => {
 				this.server.removeListener("error", reject);
 				const addr = this.server.address();
 				this.port = typeof addr === "object" && addr ? addr.port : 0;
@@ -316,13 +330,15 @@ export class PreviewServer {
 	private handleFor(doc: DocState, reused: boolean): PreviewHandle {
 		this.byPath.set(doc.filePath, doc);
 		return {
-			url: `http://127.0.0.1:${this.port}/doc/${doc.id}`,
+			url: this.withToken(`http://${urlHostFor(this.host)}:${this.port}/doc/${doc.id}`),
 			docId: doc.id,
 			title: this.titleFor(doc),
 			reused,
 			liveViewers: doc.viewers.size,
 			port: this.port,
 			uiLang: doc.uiLang,
+			host: urlHostFor(this.host),
+			token: this.token,
 		};
 	}
 
@@ -346,13 +362,13 @@ export class PreviewServer {
 			const abs = path.resolve(doc.rootDir, clean);
 			if (!this.withinRoots(abs)) return null;
 			if (kind === "link" && clean.toLowerCase().endsWith(".md")) {
-				return `/doc/${encodePathToken(abs)}`;
+				return this.withToken(`/doc/${encodePathToken(abs)}`);
 			}
 			if (kind === "link" && fs.existsSync(abs) && fs.statSync(abs).isDirectory()) {
 				const readme = path.join(abs, "README.md");
-				if (fs.existsSync(readme)) return `/doc/${encodePathToken(readme)}`;
+				if (fs.existsSync(readme)) return this.withToken(`/doc/${encodePathToken(readme)}`);
 			}
-			return `/asset/${encodePathToken(abs)}`;
+			return this.withToken(`/asset/${encodePathToken(abs)}`);
 		};
 	}
 
@@ -534,6 +550,17 @@ export class PreviewServer {
 	private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
 		const url = new URL(req.url ?? "/", "http://127.0.0.1");
 		const p = url.pathname;
+		// Browser favicon probes never carry the token. An empty 204 reveals nothing and
+		// keeps the console/logs free of auth noise, so it stays a fast path above the gate.
+		if (p === "/favicon.ico") {
+			res.statusCode = 204;
+			res.end();
+			return;
+		}
+		// Auth gate: every other route (local requests and SSE included) requires the token.
+		// Runs before any routing/state mutation, so a 401 never registers documents,
+		// starts watchers, or touches lifecycle counters.
+		if (url.searchParams.get("token") !== this.token) return this.serveUnauthorized(res, url);
 		if (p === "/" || p === "/index.html") return this.serveIndex(res);
 		if (p === "/prefs") {
 			if (req.method === "GET") return this.servePrefs(res);
@@ -541,11 +568,6 @@ export class PreviewServer {
 			res.statusCode = 405;
 			res.setHeader("Allow", "GET, POST");
 			res.end("method not allowed");
-			return;
-		}
-		if (p === "/favicon.ico") {
-			res.statusCode = 204;
-			res.end();
 			return;
 		}
 		if (p === "/mermaid.mjs") return this.serveMermaid(res);
@@ -564,6 +586,31 @@ export class PreviewServer {
 			return this.serveDoc(res, doc);
 		}
 		return notFound(res, "not found");
+	}
+
+	/**
+	 * Attach `?token=...` to a server-generated URL. The token joins with `&` when a
+	 * query already exists and is inserted before any `#fragment`, so anchors (if ever
+	 * preserved) stay after the query string.
+	 */
+	private withToken(urlPath: string): string {
+		const hashAt = urlPath.indexOf("#");
+		const base = hashAt >= 0 ? urlPath.slice(0, hashAt) : urlPath;
+		const frag = hashAt >= 0 ? urlPath.slice(hashAt) : "";
+		return `${base}${base.includes("?") ? "&" : "?"}token=${encodeURIComponent(this.token)}${frag}`;
+	}
+
+	/** 401 for a missing/invalid token. Language follows the target document when known, else resolveUiLang() (the index page included). */
+	private serveUnauthorized(res: http.ServerResponse, url: URL): void {
+		const m = url.pathname.match(/^\/doc\/([^/]+)/);
+		const doc = m ? this.docs.get(m[1] ?? "") : undefined;
+		const lang = doc?.uiLang ?? resolveUiLang();
+		res.statusCode = 401;
+		res.setHeader("Content-Type", "text/plain; charset=utf-8");
+		res.setHeader("Cache-Control", "no-store");
+		res.end(lang === "zh"
+			? "缺少或无效的访问令牌，请在 URL 中附加 ?token=<token>。"
+			: "Missing or invalid access token; append ?token=<token> to the URL.");
 	}
 
 	private resolveDocToken(token: string): DocState | null {
@@ -612,18 +659,19 @@ export class PreviewServer {
 			subtitle: doc.filePath,
 			bodyHtml: doc.rendered.html,
 			toc: doc.rendered.toc,
-			updateUrl: `/doc/${doc.id}/events?c=${cid}&v=${doc.version}`,
-			closeUrl: `/doc/${doc.id}/close?c=${cid}`,
-			askUrl: `/doc/${doc.id}/ask`,
-			chatUrl: `/doc/${doc.id}/chat`,
+			updateUrl: this.withToken(`/doc/${doc.id}/events?c=${cid}&v=${doc.version}`),
+			closeUrl: this.withToken(`/doc/${doc.id}/close?c=${cid}`),
+			askUrl: this.withToken(`/doc/${doc.id}/ask`),
+			chatUrl: this.withToken(`/doc/${doc.id}/chat`),
 			qa: this.qaList(doc.id),
 			version: resolveVersion(),
 			themeHint,
 			prefScale: prefs.scale,
 			prefLineHeight: prefs.lineHeight,
 			prefBg: prefs.bg,
-			prefsUrl: "/prefs",
-			downloadUrl: `/doc/${doc.id}/download`,
+			prefsUrl: this.withToken("/prefs"),
+			downloadUrl: this.withToken(`/doc/${doc.id}/download`),
+			mermaidUrl: this.withToken("/mermaid.mjs"),
 			lang: doc.uiLang,
 		};
 		const html = renderPage(args);
@@ -802,7 +850,7 @@ export class PreviewServer {
 		// (MD_PREVIEW_LANG env hint, then the default).
 		const lang = resolveUiLang();
 		const items = [...this.docs.values()]
-			.map((d) => `<li><a href="/doc/${d.id}">${escapeHtml(this.titleFor(d))}</a> <code>${escapeHtml(d.filePath)}</code></li>`)
+			.map((d) => `<li><a href="${this.withToken(`/doc/${d.id}`)}">${escapeHtml(this.titleFor(d))}</a> <code>${escapeHtml(d.filePath)}</code></li>`)
 			.join("\n");
 		const heading = lang === "zh" ? "Markdown 预览" : "Markdown Preview";
 		const intro = lang === "zh" ? "当前会话打开的文档：" : "Documents open in this session:";
@@ -941,6 +989,29 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 
 // ------------------------------------------------------------------ helpers
 
+/** Per-server auth token: MD_PREVIEW_TOKEN when set (stable remote access), else fresh random URL-safe bytes. */
+function resolveToken(): string {
+	const env = process.env.MD_PREVIEW_TOKEN?.trim();
+	return env || crypto.randomBytes(24).toString("base64url");
+}
+
+/** Listen host priority (contract-fixed): explicit arg > MD_PREVIEW_HOST env > 127.0.0.1. */
+function resolveListenHost(explicit?: string): string {
+	return explicit?.trim() || process.env.MD_PREVIEW_HOST?.trim() || "127.0.0.1";
+}
+
+/**
+ * Host used in generated URLs. A wildcard bind address is not a connectable destination,
+ * so loopback is used instead (a wildcard binding covers loopback); concrete addresses are
+ * used verbatim (IPv6 literals get brackets).
+ */
+function urlHostFor(listenHost: string): string {
+	if (listenHost === "0.0.0.0") return "127.0.0.1";
+	if (listenHost === "::" || listenHost === "[::]") return "[::1]";
+	if (listenHost.includes(":") && !listenHost.startsWith("[")) return `[${listenHost}]`;
+	return listenHost;
+}
+
 function notFound(res: http.ServerResponse, msg: string): void {
 	res.statusCode = 404;
 	res.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -985,10 +1056,11 @@ let starting: Promise<PreviewServer> | null = null;
 export function ensureServer(opts?: {
 	onShutdown?: (reason: string) => void;
 	onAsk?: (qa: AskNotice) => void;
+	host?: string;
 }): Promise<PreviewServer> {
 	if (instance && instance.isOpen) return Promise.resolve(instance);
 	if (!starting) {
-		const server = new PreviewServer(opts?.onShutdown);
+		const server = new PreviewServer(opts?.onShutdown, resolveListenHost(opts?.host));
 		if (opts?.onAsk) server.onAsk = opts.onAsk;
 		const boot = server.start().then(() => {
 			instance = server;
