@@ -557,6 +557,77 @@ body {
 .content blockquote > :first-child { margin-top: 0.15em; }
 .content blockquote > :last-child { margin-bottom: 0.15em; }
 
+/* ---------- GitHub-style admonitions ([!NOTE] … [!CAUTION]) ---------- */
+.content .admonition {
+	margin: 1.3em 0;
+	padding: 0.8em 1.1em;
+	border: 1px solid var(--adm-border);
+	border-left: 3px solid var(--adm-accent);
+	border-radius: 0 10px 10px 0;
+	background: var(--adm-bg);
+}
+.content .admonition-title {
+	display: flex;
+	align-items: center;
+	gap: 0.45em;
+	margin: 0 0 0.35em;
+	font-size: 0.86em;
+	font-weight: 650;
+	letter-spacing: 0.01em;
+	color: var(--adm-accent);
+}
+.content .admonition-title::before {
+	content: "";
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: currentColor;
+	flex: none;
+}
+.content .admonition-body > :first-child { margin-top: 0; }
+.content .admonition-body > :last-child { margin-bottom: 0; }
+.content .admonition-note { --adm-accent: #1f5fd1; --adm-border: rgba(47, 111, 235, 0.22); --adm-bg: rgba(47, 111, 235, 0.06); }
+.content .admonition-tip { --adm-accent: #177a4c; --adm-border: rgba(23, 122, 76, 0.22); --adm-bg: rgba(23, 122, 76, 0.06); }
+.content .admonition-important { --adm-accent: #7a3fd1; --adm-border: rgba(122, 63, 209, 0.22); --adm-bg: rgba(122, 63, 209, 0.06); }
+.content .admonition-warning { --adm-accent: #a45c00; --adm-border: rgba(164, 92, 0, 0.24); --adm-bg: rgba(164, 92, 0, 0.08); }
+.content .admonition-caution { --adm-accent: #b32d3f; --adm-border: rgba(179, 45, 63, 0.24); --adm-bg: rgba(179, 45, 63, 0.07); }
+:root[data-theme="dark"] .content .admonition-note { --adm-accent: #7fb0ff; --adm-border: rgba(127, 176, 255, 0.28); --adm-bg: rgba(110, 168, 254, 0.10); }
+:root[data-theme="dark"] .content .admonition-tip { --adm-accent: #5fd39b; --adm-border: rgba(95, 211, 155, 0.26); --adm-bg: rgba(74, 222, 128, 0.09); }
+:root[data-theme="dark"] .content .admonition-important { --adm-accent: #c39bff; --adm-border: rgba(195, 155, 255, 0.26); --adm-bg: rgba(168, 85, 247, 0.10); }
+:root[data-theme="dark"] .content .admonition-warning { --adm-accent: #f0b45c; --adm-border: rgba(240, 180, 92, 0.26); --adm-bg: rgba(245, 158, 11, 0.10); }
+:root[data-theme="dark"] .content .admonition-caution { --adm-accent: #f08a96; --adm-border: rgba(240, 138, 150, 0.26); --adm-bg: rgba(239, 68, 68, 0.10); }
+
+/* ---------- footnotes ---------- */
+.content sup.footnote-ref { line-height: 0; }
+.content sup.footnote-ref a {
+	font-size: 0.72em;
+	text-decoration: none;
+	border-bottom: 0;
+	padding: 0 0.15em;
+	color: var(--accent);
+}
+.content sup.footnote-ref a:hover { border-bottom: 1px solid var(--accent); }
+.content .footnotes {
+	margin-top: 3em;
+	padding-top: 1em;
+	border-top: 1px solid var(--border);
+	font-size: 0.88em;
+	color: var(--text-2);
+}
+.content .footnotes ol { margin: 0.4em 0 0; padding-left: 1.4em; }
+.content .footnotes li { margin: 0.5em 0; }
+.content .footnotes li > :first-child { margin-top: 0; }
+.content .footnotes li > :last-child { margin-bottom: 0; }
+.content .footnote-backrefs { margin: 0.25em 0 0; }
+.content .footnote-backrefs a {
+	text-decoration: none;
+	border-bottom: 0;
+	color: var(--text-3);
+	margin-right: 0.35em;
+}
+.content .footnote-backrefs a:hover { color: var(--accent); }
+.content .footnote-backrefs sup { font-size: 0.7em; }
+
 .content img { max-width: 100%; height: auto; border-radius: 10px; box-shadow: var(--shadow-1); }
 
 .content code {
@@ -1366,6 +1437,9 @@ const PAGE_JS = `
 			}
 		}
 		markLangActive();
+		// QA cards and chat turns were rebuilt from answerHtml above; re-apply the
+		// language to content-level anchors (e.g. admonition titles inside replies).
+		applyStaticStrings();
 		var titleEl = document.getElementById("docTitle");
 		if (titleEl) document.title = titleEl.textContent + " \\u00b7 " + (T.titleSuffix || "Markdown Preview");
 	}
@@ -1981,6 +2055,10 @@ const PAGE_JS = `
 		}
 		var content = document.getElementById("content");
 		content.innerHTML = d.html;
+		// New content arrives with the server-rendered (English) fallback labels of
+		// content-level i18n anchors such as admonition titles; apply the active UI
+		// language before the enhancements run.
+		applyStaticStrings();
 		if (d.title) {
 			document.title = d.title + " \\u00b7 " + (T.titleSuffix || "Markdown Preview");
 			document.getElementById("docTitle").textContent = d.title;
@@ -2755,6 +2833,8 @@ const PAGE_JS = `
 		// quiet = true: hydrating history on load must not yank the page down to the chat area.
 		if (bootQa[bi].chat) addChat(bootQa[bi], true); else addQa(bootQa[bi]);
 	}
+	// Hydrated answer HTML may contain content-level i18n anchors (admonition titles).
+	applyStaticStrings();
 	onScroll();
 })();
 `;

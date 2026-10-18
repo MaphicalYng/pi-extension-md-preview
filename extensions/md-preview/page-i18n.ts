@@ -67,6 +67,13 @@ export interface PageStrings {
 	footerNote: string;
 	tocTitle: string;
 
+	// ---- document admonitions ([!NOTE] … [!CAUTION]) ----
+	admonitionNote: string;
+	admonitionTip: string;
+	admonitionImportant: string;
+	admonitionWarning: string;
+	admonitionCaution: string;
+
 	// ---- QA (ask the agent) ----
 	qaRailLabel: string;
 	qaBadge: string;
@@ -162,6 +169,12 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		footerNote: "Rendered live from the source file; closing this page shuts down the preview server",
 		tocTitle: "Contents",
 
+		admonitionNote: "Note",
+		admonitionTip: "Tip",
+		admonitionImportant: "Important",
+		admonitionWarning: "Warning",
+		admonitionCaution: "Caution",
+
 		qaRailLabel: "Agent replies",
 		qaBadge: "Agent reply",
 		qaLabelQuote: "Quote",
@@ -247,6 +260,12 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		versionPrefix: "版本 ",
 		footerNote: "内容实时渲染自源文件，关闭本页面后预览服务自动退出",
 		tocTitle: "目录",
+
+		admonitionNote: "说明",
+		admonitionTip: "提示",
+		admonitionImportant: "重要",
+		admonitionWarning: "警告",
+		admonitionCaution: "谨慎",
 
 		qaRailLabel: "Agent 回复",
 		qaBadge: "Agent 回复",

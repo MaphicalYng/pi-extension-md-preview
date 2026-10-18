@@ -71,6 +71,10 @@ export async function withRetry<T>(fn: () => Promise<T>, attempts = 5): Promise<
 > [!NOTE]
 > 上限 8 秒的退避窗口是基于现网重放数据确定的。
 
+脚注示例：抖动系数来自压测结论。[^jitter]
+
+[^jitter]: 抖动系数取 0.5–1.5 的随机区间，避免重试风暴。
+
 ## 架构示意
 
 \`\`\`mermaid
@@ -166,6 +170,8 @@ if (smoke) {
 	if (!html.includes("md-preview 示例报告")) failures.push("页面缺少标题");
 	if (!html.includes("执行摘要")) failures.push("页面缺少正文渲染结果");
 	if (!html.includes("toc")) failures.push("页面缺少目录结构");
+	if (!html.includes('class="admonition admonition-note"')) failures.push("页面缺少 NOTE 提示框");
+	if (!html.includes('class="footnote-ref"') || !html.includes('class="footnotes"')) failures.push("页面缺少脚注结构");
 
 	// raw HTML 必须按转义文本显示（README 契约）：回归 XSS 弹窗问题。
 	const probe = renderMarkdown('裸文本 <script>alert("xss")</script> 与 <img src=x onerror=alert(1)>');
@@ -177,6 +183,19 @@ if (smoke) {
 	const mermaidProbe = renderMarkdown("```mermaid\ngraph TD; A-->B\n```");
 	if (!mermaidProbe.html.includes('<pre class="mermaid">')) failures.push("mermaid 代码块未渲染为裸 pre 占位");
 	if (mermaidProbe.html.includes("code-block")) failures.push("mermaid 代码块不应包含 code-block 结构");
+
+	// GitHub 风格提示框与脚注（marked 扩展）。
+	const admonitionProbe = renderMarkdown("> [!NOTE]\n> Body\n");
+	if (!admonitionProbe.html.includes('class="admonition admonition-note"')) failures.push("NOTE 提示框未渲染为 callout");
+	if (admonitionProbe.html.includes("[!NOTE]")) failures.push("NOTE 提示框标记未被移除");
+	const plainQuoteProbe = renderMarkdown("> plain quote\n");
+	if (plainQuoteProbe.html.includes("admonition")) failures.push("普通引用块被误判为提示框");
+	const footnoteProbe = renderMarkdown("Text[^note].\n\n[^note]: Body.\n");
+	if (!footnoteProbe.html.includes('class="footnote-ref"')) failures.push("脚注引用未渲染");
+	if (!footnoteProbe.html.includes('class="footnotes"') || !footnoteProbe.html.includes('id="fn-1"')) failures.push("脚注列表未渲染");
+	if (footnoteProbe.html.includes("[^note]")) failures.push("脚注标记残留");
+	const fencedFootnoteProbe = renderMarkdown("```md\n[^note]: code\n```\n");
+	if (fencedFootnoteProbe.html.includes("footnotes")) failures.push("代码块内的脚注定义被误解析");
 
 	// 导出 HTML：工具栏按钮 + 离线运行时（EXPORT_JS）已注入页面脚本。
 	if (!html.includes('id="exportBtn"')) failures.push("页面缺少导出按钮");

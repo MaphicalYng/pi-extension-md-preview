@@ -27,12 +27,19 @@ Body text supports **bold**, *italic*, `inline code`, ~~strikethrough~~, and aut
 
 | Feature | Implementation | Status |
 | --- | --- | --- |
-| GFM rendering | Zero-dependency built-in renderer | ✅ |
+| GFM rendering | Built-in renderer (marked) | ✅ |
+| Footnotes | Numbered references + end-of-document list | ✅ |
 | Code highlighting | Lexical rules for 25+ languages | ✅ |
 | Mermaid diagrams | Lazy-loaded same-origin runtime | ✅ |
 | Live sync | SSE-push refresh | ✅ |
 | Ask about selection | ask → SSE → reply card | ✅ |
 | HTML export | Self-contained offline snapshot | ✅ |
+
+## Footnotes
+
+A footnote reference renders as a small numbered link,[^note] and its definition is collected into a list at the end of the document.
+
+[^note]: The footnote body supports **inline Markdown**, `code`, and [links](https://github.com/MaphicalYng/pi-extension-md-preview).
 
 ## Task List
 

@@ -184,6 +184,22 @@ check(pageSrc.includes('removeInClone(clone, ["chatInput"])'), "export does not 
 check(pageSrc.includes("if (qa.chat) { addChat(qa); return; }"), "ask SSE does not route chat entries to the chat area");
 check(pageSrc.includes("chatState[d.id]"), "answer SSE does not route chat replies");
 
+/* 5b. Content-level i18n anchors: admonition titles need labels in both bundles. */
+const { renderMarkdown } = require(join(buildDir, "render.js"));
+for (const kind of ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"]) {
+	const key = "admonition" + kind.charAt(0) + kind.slice(1).toLowerCase();
+	const probe = renderMarkdown("> [!" + kind + "]\n> body\n");
+	check(probe.html.includes('data-i18n="' + key + '"'), "render.ts admonition " + kind + ' must emit data-i18n="' + key + '"');
+	check(
+		typeof STRINGS.en[key] === "string" && typeof STRINGS.zh[key] === "string",
+		"STRINGS.en/zh." + key + " is missing",
+	);
+}
+check(
+	/content\.innerHTML = d\.html;[\s\S]{0,400}applyStaticStrings\(\);/.test(pageSrc),
+	"content updates must re-apply static i18n strings (admonition titles)",
+);
+
 /* Report. */
 if (failures.length) {
 	console.error("\npage-i18n-check: " + failures.length + " failure(s)");
