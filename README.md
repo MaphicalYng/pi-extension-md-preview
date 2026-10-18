@@ -183,6 +183,8 @@ MD_PREVIEW_BIND=0.0.0.0 pi
 - A `--host` the bind address does not cover (bound to `127.0.0.1`, asking for a LAN IP) still previews, but the transcript and the UI warning tell you to start pi with `MD_PREVIEW_BIND=0.0.0.0` and restart: the server is a per-session singleton, so an env change mid-session does not rebind an already-running server.
 - A malformed `--host` (missing value, given twice, or a URL such as `http://host`) is rejected with an explicit error and no browser is opened.
 
+> Full remote-access walkthrough (pi on a remote server, browser on your laptop, Agent Q&A over the network, plus an SSH-tunnel option): [remote access guide](docs/remote-access.md).
+
 ### User-level preference persistence
 
 Theme, reading background, font scale and line height persist on two levels:
