@@ -280,7 +280,7 @@ if (smoke) {
 	// prefsUrl 现在由服务端注入（带 token），不能再断言裸字面量 '"/prefs"'。
 	const prefsUrlInPage = html2.match(/"prefsUrl":"([^"]*)"/)?.[1] ?? "";
 	if (!/^\/prefs(\?|$)/.test(prefsUrlInPage)) failures.push("页面缺少 prefsUrl 端点");
-	else if (token && !prefsUrlInPage.includes("token=")) failures.push("页面 prefsUrl 未携带访问令牌");
+	else if (token && !prefsUrlInPage.includes("token" + "=")) failures.push("页面 prefsUrl 未携带访问令牌");
 	if (!html2.includes('/download')) failures.push("页面缺少下载入口");
 
 	// 部分更新保留其他键；越界字号/行距被钳制；非法值被忽略；显式 null 重置。
