@@ -14,7 +14,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { currentServer, ensureServer, type AskNotice, type QaEntry } from "./server";
+import { currentServer, ensureServer, envBindHost, type AskNotice, type QaEntry } from "./server";
 import { openBrowser } from "./browser";
 import { loadPrefs, savePrefs, prefsFilePath, browserHostError, pickBrowserHost, type UiLang } from "./prefs";
 
@@ -175,7 +175,7 @@ export function parsePreviewArgs(raw: string): PreviewArgs {
 	if (m) {
 		const value = (m[2] ?? "").replace(/^["']|["']$/g, "");
 		if (!value || value.startsWith("-")) {
-			return { file: "", error: "`--host` requires an IP or hostname, e.g. `/md-preview report.md --host 192.168.1.10`." };
+			return { file: "", error: "`--host` requires an IP or hostname, e.g. `/md-preview report.md --host 192.0.2.10`." };
 		}
 		if (value.includes("/")) {
 			return { file: "", error: `\`--host\` expects a bare IP or hostname, not \`${value}\` (no scheme / path / port).` };
@@ -215,14 +215,19 @@ export function needsHostWarning(listenHost: string, targetHost: string): boolea
 
 /**
  * Explain a host mismatch. Must keep three points explicit: the current bind, the
- * MD_PREVIEW_HOST=0.0.0.0 fix (needs a restart) and the per-session singleton semantics.
+ * MD_PREVIEW_BIND=0.0.0.0 fix (needs a restart) and the per-session singleton semantics.
  */
 function hostMismatchWarning(listenHost: string, targetHost: string, port: number): string {
 	return (
 		`the preview server is listening on ${listenHost} only, so http://${targetHost}:${port}/... may not be reachable. ` +
-		`Set MD_PREVIEW_HOST=0.0.0.0 (or MD_PREVIEW_HOST=${targetHost}) and restart pi to serve that address. ` +
-		"The preview server is a per-session singleton: it keeps its original bind even if MD_PREVIEW_HOST changes mid-session - the new value only takes effect after a restart."
+		`Set MD_PREVIEW_BIND=0.0.0.0 (or MD_PREVIEW_BIND=${targetHost}) and restart pi to serve that address. ` +
+		"The preview server is a per-session singleton: it keeps its original bind even if MD_PREVIEW_BIND changes mid-session - the new value only takes effect after a restart."
 	);
+}
+
+/** True when the legacy bind env name is the only one in use. */
+function usesLegacyBindEnv(): boolean {
+	return !process.env.MD_PREVIEW_BIND?.trim() && !!process.env.MD_PREVIEW_HOST?.trim();
 }
 
 /**
@@ -252,7 +257,7 @@ async function previewMarkdown(
 	}
 
 	const server = await ensureServer({
-		host: process.env.MD_PREVIEW_HOST?.trim() || undefined, // explicit: same precedence as the contract chain
+		host: envBindHost(), // MD_PREVIEW_BIND (or legacy MD_PREVIEW_HOST): same precedence as the contract chain
 		onShutdown: (reason) => {
 			try {
 				opts.notify?.(`Markdown preview: ${reason}`, "info");
@@ -301,6 +306,9 @@ async function previewMarkdown(
 			`- Live sync: the page refreshes automatically when the file changes; no need to call this tool again`,
 			`- Auto-exit: the preview server stops once the user closes the browser tab, so you do not need to keep working or poll its status`,
 			...(warning ? [`- Warning: ${warning}`] : []),
+			...(usesLegacyBindEnv()
+				? ["- Warning: `MD_PREVIEW_HOST` is deprecated for the bind address; use `MD_PREVIEW_BIND` (the old name still works)."]
+				: []),
 			``,
 			"Share the page URL with the user exactly as returned - it carries a required `?token=` access token - then continue with your other work.",
 		].join("\n"),
@@ -445,7 +453,7 @@ function parseHostCmdArgs(raw: string): HostCmdArgs {
 	if (!v)
 		return {
 			mode: "show",
-			error: "host must not be empty; provide a bare IP or hostname (e.g. `192.168.10.10`) or `--clear` to remove the saved host",
+			error: "host must not be empty; provide a bare IP or hostname (e.g. `192.0.2.10`) or `--clear` to remove the saved host",
 		};
 	if (v === "--clear" || v === "clear") return { mode: "clear" }; // "clear" is an ergonomic alias; a machine literally named "clear" is not a plausible target
 	if (v.startsWith("-")) return { mode: "show", error: `unknown option \`${v}\`` };
@@ -496,7 +504,7 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 					content: [
 						"Usage: `/md-preview <file path> [--host <ip>]`",
 						"",
-						"`--host <ip>` opens the browser tab at that IP instead of the bind address, e.g. `/md-preview reports/summary.md --host 192.168.1.10`. The port and the `?token=` access token are preserved. The preview server must listen on an address that covers that IP: start pi with `MD_PREVIEW_HOST=0.0.0.0` (the bind address is fixed for the whole session, so a restart is required).",
+						"`--host <ip>` opens the browser tab at that IP instead of the bind address, e.g. `/md-preview reports/summary.md --host 192.0.2.10`. The port and the `?token=` access token are preserved. The preview server must listen on an address that covers that IP: start pi with `MD_PREVIEW_BIND=0.0.0.0` (the bind address is fixed for the whole session, so a restart is required).",
 						"",
 						"To avoid passing `--host` on every call, persist it once with `/md-preview-host <ip|hostname>` (user-level settings, shared by every pi instance); `/md-preview-host --clear` removes it. An explicit `--host` still wins per call.",
 						"",
@@ -554,12 +562,15 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 			const server = liveServer();
 			const bindFallback = server
 				? localBrowserHost(server.host)
-				: localBrowserHost(process.env.MD_PREVIEW_HOST?.trim() || "127.0.0.1");
+				: localBrowserHost(envBindHost() ?? "127.0.0.1");
 			const picked = pickBrowserHost(undefined, persisted, bindFallback);
 			const sourceLabel = picked.source === "persisted" ? "persisted setting" : "server bind fallback";
+			const envBind = envBindHost();
 			const bindLine = server
 				? `${server.host} (running)`
-				: "no preview server running; default 127.0.0.1 unless MD_PREVIEW_HOST is set";
+				: envBind
+					? `${envBind} (from ${process.env.MD_PREVIEW_BIND?.trim() ? "MD_PREVIEW_BIND" : "MD_PREVIEW_HOST (deprecated)"})`
+					: "no preview server running; default 127.0.0.1";
 			send(
 				[
 					"Markdown preview browser host:",

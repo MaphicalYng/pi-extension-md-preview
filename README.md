@@ -156,7 +156,7 @@ Pi loads the TypeScript sources directly via jiti — no build step; `tsconfig.j
 
 | Environment variable | Effect |
 | --- | --- |
-| `MD_PREVIEW_HOST` | Bind address, default `127.0.0.1`. Set `0.0.0.0` (or a specific NIC IP) to serve other machines. **Read when the preview server starts (the first preview of the session)**; an env change mid-session needs a pi restart to take effect. It only decides the bind address — which host the browser opens is chosen by the persisted setting (`/md-preview-host`) and `--host` |
+| `MD_PREVIEW_BIND` | Bind address, default `127.0.0.1`. Set `0.0.0.0` (or a specific NIC IP) to serve other machines. **Read when the preview server starts (the first preview of the session)**; an env change mid-session needs a pi restart to take effect. It only decides the bind address — which host the browser opens is chosen by the persisted setting (`/md-preview-host`) and `--host`. The old name `MD_PREVIEW_HOST` is still accepted as a deprecated alias (`MD_PREVIEW_BIND` wins when both are set) |
 | `MD_PREVIEW_TOKEN` | Fixed access token, overriding the random URL-safe token generated at startup (useful for a stable remote link). Every page URL carries `?token=` |
 | `MD_PREVIEW_THEME` | Initial theme hint: `system` / `light` / `dark` (only applies until the user picks a theme) |
 | `MD_PREVIEW_LANG` | Fallback UI language: `en` / `zh` (used by the `/md-preview` command; the `md_preview` tool always passes `ui_lang` explicitly) |
@@ -170,7 +170,7 @@ Every URL the extension prints (tool output, command transcript) already carries
 To serve other machines, opt in with a reachable bind address and tell the command which IP the tab should open with:
 
 ```bash
-MD_PREVIEW_HOST=0.0.0.0 pi
+MD_PREVIEW_BIND=0.0.0.0 pi
 
 # inside the session
 /md-preview reports/summary.md                     # -> http://127.0.0.1:<port>/doc/<id>?token=…
@@ -180,7 +180,7 @@ MD_PREVIEW_HOST=0.0.0.0 pi
 - `--host <ip>` only decides which host the browser and the shared URL use; the port and `?token=` always match the server's. It accepts `--host <ip>`, `--host=<ip>` and `--host "<ip>"`, before or after the file path.
 - `/md-preview-host <ip|hostname>` persists the browser host in the user-level config: it is used whenever a preview opens without `--host`, in this instance and in every other pi instance (the value is read at call time). `/md-preview-host` shows the persisted value, the effective value with its source and the settings file path; `/md-preview-host --clear` removes it. A persisted host the bind address does not cover keeps working with the same warning described below.
 - Binding `0.0.0.0` (or `::`) without `--host` and without a persisted host opens the browser at `127.0.0.1` — the local reading view. A remote reader needs `--host <ip-reachable-from-them>` (or the equivalent manual edit) and must keep the `?token=`.
-- A `--host` the bind address does not cover (bound to `127.0.0.1`, asking for a LAN IP) still previews, but the transcript and the UI warning tell you to start pi with `MD_PREVIEW_HOST=0.0.0.0` and restart: the server is a per-session singleton, so an env change mid-session does not rebind an already-running server.
+- A `--host` the bind address does not cover (bound to `127.0.0.1`, asking for a LAN IP) still previews, but the transcript and the UI warning tell you to start pi with `MD_PREVIEW_BIND=0.0.0.0` and restart: the server is a per-session singleton, so an env change mid-session does not rebind an already-running server.
 - A malformed `--host` (missing value, given twice, or a URL such as `http://host`) is rejected with an explicit error and no browser is opened.
 
 ### User-level preference persistence
@@ -220,7 +220,7 @@ The reply appears in real time as a card **beside the document** (synced across 
 
 ## Security considerations
 
-- The server binds to loopback by default. **Every route — including requests from the local machine — requires the `?token=` access token**; a missing or wrong token returns `401`. Exposing the server to other machines is opt-in (`MD_PREVIEW_HOST`), and even then access stays token-protected. The page itself makes no external network requests (no CDN, no external assets).
+- The server binds to loopback by default. **Every route — including requests from the local machine — requires the `?token=` access token**; a missing or wrong token returns `401`. Exposing the server to other machines is opt-in (`MD_PREVIEW_BIND`), and even then access stays token-protected. The page itself makes no external network requests (no CDN, no external assets).
 - The token travels in the URL, so it can appear in browser history and terminal transcripts — that is the deliberate trade-off of a share-the-link design. Pin it with `MD_PREVIEW_TOKEN` when you need a stable, known link; `--host` only changes the host of the opened/shared URL and never relaxes authentication.
 - The mermaid runtime is served same-origin by the preview server (`/mermaid.mjs`), so diagram rendering produces no external requests either.
 - Static assets and link resolution are validated to stay inside (session cwd ∪ previewed document directories); unknown file types return 404, and dangerous types like `text/html` are force-served as `text/plain`.

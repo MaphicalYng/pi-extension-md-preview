@@ -119,7 +119,7 @@ if (!existsSync(appendix)) writeFileSync(appendix, SAMPLE_APPENDIX, "utf8");
 
 /* 4. Start the preview server against the sample report. */
 const require = createRequire(import.meta.url);
-const { ensureServer } = require(join(root, ".demo", "build", "server.js"));
+const { ensureServer, envBindHost } = require(join(root, ".demo", "build", "server.js"));
 const { openBrowser } = require(join(root, ".demo", "build", "browser.js"));
 const { renderMarkdown } = require(join(root, ".demo", "build", "render.js"));
 
@@ -145,6 +145,15 @@ const docUrl = (sub = "", params) => serverUrl(`/doc/${handle.docId}${sub}`, par
 
 if (smoke) {
 	const failures = [];
+
+	// Env naming contract: MD_PREVIEW_BIND is canonical; MD_PREVIEW_HOST is a deprecated alias.
+	process.env.MD_PREVIEW_BIND = "0.0.0.0";
+	process.env.MD_PREVIEW_HOST = "192.0.2.10";
+	if (envBindHost() !== "0.0.0.0") failures.push("MD_PREVIEW_BIND 未优先于 MD_PREVIEW_HOST");
+	delete process.env.MD_PREVIEW_BIND;
+	if (envBindHost() !== "192.0.2.10") failures.push("MD_PREVIEW_HOST 兼容别名未生效");
+	delete process.env.MD_PREVIEW_HOST;
+	if (envBindHost() !== undefined) failures.push("未设置绑定环境变量时不应返回地址");
 
 	/** 读取 SSE 流直到谓词命中（或超时），累积文本到 acc。 */
 	const readEventsUntil = async (reader, acc, pred, label) => {

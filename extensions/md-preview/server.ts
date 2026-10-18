@@ -995,9 +995,17 @@ function resolveToken(): string {
 	return env || crypto.randomBytes(24).toString("base64url");
 }
 
-/** Listen host priority (contract-fixed): explicit arg > MD_PREVIEW_HOST env > 127.0.0.1. */
+/**
+ * Bind-address env, in precedence order: `MD_PREVIEW_BIND` (canonical) then
+ * `MD_PREVIEW_HOST` (deprecated alias kept for backward compatibility).
+ */
+export function envBindHost(): string | undefined {
+	return process.env.MD_PREVIEW_BIND?.trim() || process.env.MD_PREVIEW_HOST?.trim() || undefined;
+}
+
+/** Listen host priority: explicit arg > bind env (`MD_PREVIEW_BIND`, legacy `MD_PREVIEW_HOST`) > 127.0.0.1. */
 function resolveListenHost(explicit?: string): string {
-	return explicit?.trim() || process.env.MD_PREVIEW_HOST?.trim() || "127.0.0.1";
+	return explicit?.trim() || envBindHost() || "127.0.0.1";
 }
 
 /**
