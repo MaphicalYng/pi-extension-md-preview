@@ -6,6 +6,7 @@
 
 [![npm version](https://img.shields.io/npm/v/pi-md-preview)](https://www.npmjs.com/package/pi-md-preview)
 [![npm downloads](https://img.shields.io/npm/dm/pi-md-preview)](https://www.npmjs.com/package/pi-md-preview)
+[![pi.dev 包页面](https://img.shields.io/badge/pi.dev-package_page-8B5CF6)](https://pi.dev/packages/pi-md-preview)
 [![license](https://img.shields.io/npm/l/pi-md-preview)](LICENSE)
 
 一个 [Pi](https://github.com/earendil-works/pi-coding-agent) 扩展：把 Agent 编写的 Markdown 文件渲染成专业、简洁、现代的 Web 页面，并在浏览器中呈现给用户阅读。
@@ -35,8 +36,10 @@
 
 ### 从 npm 安装
 
+包发布在 npm：[`pi-md-preview`](https://www.npmjs.com/package/pi-md-preview)；Pi 官网上也有对应的包页面（含 manifest 与 README）：[`pi.dev/packages/pi-md-preview`](https://pi.dev/packages/pi-md-preview)。
+
 ```bash
-pi install npm:pi-md-preview@0.1.0
+pi install npm:pi-md-preview@0.2.0
 ```
 
 安装后重启 pi 会话即可。只想临时试用一次、不写入 settings：
@@ -79,8 +82,8 @@ pi --extension ./extensions/md-preview/index.ts
 
 ```
 /md-preview reports/summary.md
-/md-preview reports/summary.md --host 192.168.1.10   # 以该 IP 打开标签页（服务需监听 0.0.0.0）
-/md-preview-host 192.168.10.10                       # 持久化浏览器 host，所有预览都用它
+/md-preview reports/summary.md --host 192.0.2.10     # 以该 IP 打开标签页（服务需监听 0.0.0.0）
+/md-preview-host 192.0.2.20                          # 持久化浏览器 host，所有预览都用它
 /md-preview-host --clear                             # 清除该设置，回落到服务绑定地址
 /md-preview              # 列出当前预览中的文档
 ```
@@ -137,6 +140,7 @@ extensions/md-preview/
 ├── page-i18n.ts   # 双语 UI 文案表（en/zh）+ 语言归一化
 ├── server.ts      # 本地 HTTP 服务：路由、SSE 实时同步、viewer 计数、自动退出、/prefs、/doc/{id}/ask、/doc/{id}/download
 ├── prefs.ts       # 用户级偏好（主题/背景/字号/行距 + 持久化浏览器 host）：读取、校验、原子落盘、防抖写入
+├── vendor/        # 内置的自包含 Mermaid ESM 构建（MIT），由预览服务按需同源提供
 └── browser.ts     # 跨平台默认浏览器打开
 scripts/
 ├── check.mjs             # npm run check：链接宿主类型定义并做严格 TypeScript 检查
@@ -169,7 +173,7 @@ MD_PREVIEW_HOST=0.0.0.0 pi
 
 # 会话内
 /md-preview reports/summary.md                     # -> http://127.0.0.1:<端口>/doc/<id>?token=…
-/md-preview reports/summary.md --host 192.168.1.10 # -> http://192.168.1.10:<端口>/doc/<id>?token=…
+/md-preview reports/summary.md --host 192.0.2.10 # -> http://192.0.2.10:<端口>/doc/<id>?token=…
 ```
 
 - `--host <ip>` 只决定浏览器与该分享 URL 使用哪个 host；端口与 `?token=` 始终与服务端一致。支持 `--host <ip>`、`--host=<ip>`、`--host "<ip>"` 三种写法，放在文件名前后均可。

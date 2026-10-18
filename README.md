@@ -6,6 +6,7 @@ English | [简体中文](README.zh-CN.md)
 
 [![npm version](https://img.shields.io/npm/v/pi-md-preview)](https://www.npmjs.com/package/pi-md-preview)
 [![npm downloads](https://img.shields.io/npm/dm/pi-md-preview)](https://www.npmjs.com/package/pi-md-preview)
+[![pi.dev package page](https://img.shields.io/badge/pi.dev-package_page-8B5CF6)](https://pi.dev/packages/pi-md-preview)
 [![license](https://img.shields.io/npm/l/pi-md-preview)](LICENSE)
 
 A [Pi](https://github.com/earendil-works/pi-coding-agent) extension that renders agent-written Markdown files as polished, minimal, modern web pages and presents them in the browser.
@@ -35,8 +36,10 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 
 ### Install from npm
 
+The package is published on npm as [`pi-md-preview`](https://www.npmjs.com/package/pi-md-preview), and has a page on the Pi site with its manifest and README: [`pi.dev/packages/pi-md-preview`](https://pi.dev/packages/pi-md-preview).
+
 ```bash
-pi install npm:pi-md-preview@0.1.0
+pi install npm:pi-md-preview@0.2.0
 ```
 
 Restart your Pi session after installing. To try it for one invocation without installing:
@@ -79,8 +82,8 @@ The tool returns the page URL; the agent shares it with the user and moves on �
 
 ```
 /md-preview reports/summary.md
-/md-preview reports/summary.md --host 192.168.1.10   # open the tab at this IP (the server must listen on 0.0.0.0)
-/md-preview-host 192.168.10.10                       # persist this browser host for every preview
+/md-preview reports/summary.md --host 192.0.2.10     # open the tab at this IP (the server must listen on 0.0.0.0)
+/md-preview-host 192.0.2.20                          # persist this browser host for every preview
 /md-preview-host --clear                             # forget it and fall back to the server bind address
 /md-preview              # list documents currently being previewed
 ```
@@ -137,6 +140,7 @@ extensions/md-preview/
 ├── page-i18n.ts   # bilingual UI string table (en/zh) + language normalization
 ├── server.ts      # local HTTP server: routing, SSE live sync, viewer counting, auto-exit, /prefs, /doc/{id}/ask, /doc/{id}/download
 ├── prefs.ts       # user-level preferences (theme/bg/scale/line-height + persisted browser host): load, validate, atomic debounced persistence
+├── vendor/        # vendored self-contained Mermaid ESM build (MIT), served lazily from the preview origin
 └── browser.ts     # cross-platform default-browser opener
 scripts/
 ├── check.mjs             # npm run check: link host type definitions and run strict TypeScript checks
@@ -169,7 +173,7 @@ MD_PREVIEW_HOST=0.0.0.0 pi
 
 # inside the session
 /md-preview reports/summary.md                     # -> http://127.0.0.1:<port>/doc/<id>?token=…
-/md-preview reports/summary.md --host 192.168.1.10 # -> http://192.168.1.10:<port>/doc/<id>?token=…
+/md-preview reports/summary.md --host 192.0.2.10 # -> http://192.0.2.10:<port>/doc/<id>?token=…
 ```
 
 - `--host <ip>` only decides which host the browser and the shared URL use; the port and `?token=` always match the server's. It accepts `--host <ip>`, `--host=<ip>` and `--host "<ip>"`, before or after the file path.
