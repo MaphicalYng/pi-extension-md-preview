@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="title">
+	<title id="title">pi-md-preview monochrome mark</title>
+	<!--
+		Single-colour version for stamps, embossing and one-ink print.
+		Paint the whole mark with currentColor; the fold is separated by a
+		knocked-out crease and the ruled lines are knocked out of the paper.
+	-->
+	<defs>
+		<mask id="ink">
+			<rect width="512" height="512" fill="#000"/>
+			<path d="M112 44h172l152 152v236a36 36 0 0 1-36 36H112a36 36 0 0 1-36-36V80a36 36 0 0 1 36-36Z" fill="#fff"/>
+			<path d="M284 44l152 152H284Z" fill="#fff"/>
+			<g fill="#000">
+				<path d="M290 50 433 193" stroke="#000" stroke-width="6"/>
+				<rect x="132" y="244" width="176" height="30" rx="15"/>
+				<rect x="132" y="310" width="260" height="20" rx="10"/>
+				<rect x="132" y="348" width="252" height="20" rx="10"/>
+				<rect x="132" y="386" width="164" height="20" rx="10"/>
+			</g>
+		</mask>
+	</defs>
+
+	<path d="M112 44h172l152 152v236a36 36 0 0 1-36 36H112a36 36 0 0 1-36-36V80a36 36 0 0 1 36-36Z" fill="currentColor" mask="url(#ink)"/>
+</svg>

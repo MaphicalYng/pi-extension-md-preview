@@ -2759,6 +2759,12 @@ const PAGE_JS = `
 })();
 `;
 
+// Browser-tab icon. Single source of truth for the mark: assets/logo/favicon.svg
+// (keep the geometry in sync when either file changes).
+const FAVICON_SVG =
+	'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#0e1116"/><path d="M144 48h128l140 140v224a44 44 0 0 1-44 44H144a44 44 0 0 1-44-44V92a44 44 0 0 1 44-44Z" fill="#f7f3ea"/><path d="M272 48 412 188H272Z" fill="#4a86f0"/><rect x="148" y="236" width="176" height="38" rx="19" fill="#12161d"/><g fill="#12161d" fill-opacity=".45"><rect x="148" y="312" width="216" height="30" rx="15"/><rect x="148" y="364" width="156" height="30" rx="15"/></g></svg>';
+const FAVICON_URI = `data:image/svg+xml,${encodeURIComponent(FAVICON_SVG)}`;
+
 function icon(name: string): string {
 	const icons: Record<string, string> = {
 		logo:
@@ -2790,6 +2796,7 @@ export function renderPage(options: PageOptions): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<link rel="icon" type="image/svg+xml" href="${FAVICON_URI}">
 <title>${escapeHtml(title)} &middot; ${escapeHtml(t.titleSuffix)}</title>
 ${THEME_BOOT}
 <style>${PAGE_CSS}</style>

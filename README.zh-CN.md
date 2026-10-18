@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo/logo-512.png" width="104" alt=""></p>
+
 # pi-md-preview
 
 [English](README.md) | 简体中文
