@@ -85,7 +85,7 @@ Shell:
 
 ```bash
 # Install from npm, then restart your Pi session
-pi install npm:pi-md-preview@0.2.0
+pi install npm:pi-md-preview@0.3.0
 
 # Try it once without installing
 pi -e npm:pi-md-preview
