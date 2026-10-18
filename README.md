@@ -17,10 +17,12 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 
 | Capability | Implementation |
 | --- | --- |
-| Markdown as a web page | Self-contained, zero-dependency Markdown renderer (GFM-style): headings, tables, fenced code (25+ languages highlighted), blockquotes (incl. `[!NOTE]` admonitions), task lists, footnotes, images, autolinks |
-| Mermaid diagrams | `mermaid` fenced blocks render as diagrams; the mermaid runtime is lazy-loaded from the preview server's own origin (flowcharts, sequence diagrams, …) |
 | Agent-initiated preview + auto-open browser | The `md_preview` tool starts a local server and opens the page in the system default browser (macOS `open` / Linux `xdg-open` / Windows `start`), de-duplicating across tabs (an already-open tab is reused); `/md-preview <file> --host <ip>` can pick which IP the tab opens with, and `/md-preview-host <ip>` persists that choice in the user-level config so every pi instance opens at it |
 | No babysitting | The tool returns immediately and the server runs on its own. It exits 8 s after the last tab closes (or 5 min after start if no tab ever opened), with a final safety exit when the Pi session shuts down |
+| Ask the agent about selected text | Select text in the page → floating "Ask" button → the question is injected into the Pi session to wake the agent → the answer is pushed back live via the `md_preview_reply` tool as a reply card (quote / answer / timestamp) beside the document, with the quoted text highlighted in orange |
+| Chat with the agent about the document | A chat area at the bottom of the page takes a message about the whole document (no text selection needed) and injects it into the Pi session together with a summary of the recent chat turns; the agent replies with `md_preview_reply` and the answer appears as an "Agent" message in the chat feed (newest first), restored after refresh/reopen |
+| Markdown as a web page | GFM renderer built on `marked`: headings, tables, fenced code (25+ languages highlighted), blockquotes (incl. `[!NOTE]` … `[!CAUTION]` admonitions), task lists, footnotes, images, autolinks |
+| Mermaid diagrams | `mermaid` fenced blocks render as diagrams; the mermaid runtime is lazy-loaded from the preview server's own origin (flowcharts, sequence diagrams, …) |
 | Bilingual UI (en / zh) | The agent always picks the page UI language explicitly via the required `ui_lang` tool parameter, chosen from the user's language; an in-page 中/EN switch lets the reader override it (remembered in `localStorage`) |
 | Clean, modern reading experience | Minimal reading layout, paper-texture backgrounds, page progress bar, table of contents with scroll highlighting, code blocks with language label + one-click copy |
 | Deliberate motion | Smooth theme transitions, sliding TOC indicator, hover micro-interactions, fade-in on content refresh, scroll-aware back-to-top |
@@ -28,7 +30,6 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 | Font-size control | A- / A+ in ±10% steps across 0.7× – 1.6× |
 | Line-height control | Stepped control across 1.4 – 2.2 (default 1.75) |
 | User-level persistence | Theme, reading background, font scale and line height persist to a user-level config file (`$XDG_CONFIG_HOME/md-preview/settings.json`), surviving sessions and random ports; browser `localStorage` acts as a same-origin fast cache |
-| Ask the agent about selected text | Select text in the page → floating "Ask" button → the question is injected into the Pi session to wake the agent → the answer is pushed back live via the `md_preview_reply` tool as a reply card (quote / answer / timestamp) beside the document, with the quoted text highlighted in orange |
 | Export HTML snapshot | One click exports a self-contained offline HTML file: images inlined, current theme/background/font/language frozen, interactive-only controls stripped — it reads exactly like the live preview |
 | Bonus: live sync | When the source file changes, the page refreshes automatically (SSE) — no need to call the tool again |
 
@@ -135,8 +136,8 @@ Agent writes .md ──► md_preview tool ──► local preview server (127.0
 ```
 extensions/md-preview/
 ├── index.ts       # extension entry: md_preview / md_preview_reply tools + /md-preview + /md-preview-host commands + shutdown safety net
-├── render.ts      # zero-dependency Markdown → HTML renderer (GFM subset + code highlighting)
-├── page.ts        # page template: CSS theme system + interaction scripts (TOC/theme/font/live sync/ask/export)
+├── render.ts      # Markdown → HTML renderer (marked/GFM): TOC, anchors, admonitions, footnotes, code-block chrome
+├── page.ts        # page template: CSS theme system + interaction scripts (TOC/theme/font/line-height/code highlighting/live sync/ask/chat/export)
 ├── page-i18n.ts   # bilingual UI string table (en/zh) + language normalization
 ├── server.ts      # local HTTP server: routing, SSE live sync, viewer counting, auto-exit, /prefs, /doc/{id}/ask, /doc/{id}/download
 ├── prefs.ts       # user-level preferences (theme/bg/scale/line-height + persisted browser host): load, validate, atomic debounced persistence
@@ -229,7 +230,7 @@ The reply appears in real time as a card **beside the document** (synced across 
 ## Known limitations
 
 - Markdown support covers the common GFM subset; inline HTML such as `<details>` is rendered as escaped text (for safety).
-- Code highlighting uses built-in lexical rules (25+ common languages); unsupported languages render as plain-text code blocks; `mermaid` fences bypass highlighting and render as diagrams.
+- Code highlighting is applied client-side in the page using built-in lexical rules (25+ common languages); unsupported languages render as plain-text code blocks; `mermaid` fences bypass highlighting and render as diagrams.
 - "Exit 8 s after the last tab closes" is a design choice, not a bug: a quick refresh or network hiccup won't kill your preview; calling the tool again revives it at any time.
 - In exported HTML snapshots, mermaid SVG colors stay at the snapshot-time theme even if you switch themes in the snapshot.
 
