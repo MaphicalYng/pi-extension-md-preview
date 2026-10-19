@@ -3227,6 +3227,25 @@ const PAGE_JS = `
 		});
 	}
 
+	// Enter first confirms an IME candidate; only a plain Enter should submit.
+	// Chromium marks the composition keydown with isComposing/keyCode 229, while
+	// Safari can deliver Enter right after compositionend — keep the flag until
+	// the next task so that trailing keydown does not fire the send action.
+	function bindEnterSend(el, send) {
+		var composing = false;
+		el.addEventListener("compositionstart", function () { composing = true; });
+		el.addEventListener("compositionend", function () {
+			setTimeout(function () { composing = false; }, 0);
+		});
+		el.addEventListener("blur", function () { composing = false; });
+		el.addEventListener("keydown", function (e) {
+			if (e.key !== "Enter" || e.shiftKey) return;
+			if (composing || e.isComposing || e.keyCode === 229) return;
+			e.preventDefault();
+			send();
+		});
+	}
+
 	if (canAsk || canRev) {
 		if (selBtn) selBtn.hidden = !canAsk;
 		if (revSelBtn) revSelBtn.hidden = !canRev;
@@ -3252,9 +3271,7 @@ const PAGE_JS = `
 		var sendBtn = document.getElementById("qaPanelSend");
 		if (sendBtn) sendBtn.addEventListener("click", submitPanel);
 		if (panelStash) panelStash.addEventListener("click", function () { if (stashPanel(false)) closePanel(true); });
-		if (panelInput) panelInput.addEventListener("keydown", function (e) {
-			if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitPanel(); }
-		});
+		if (panelInput) bindEnterSend(panelInput, submitPanel);
 		document.addEventListener("keydown", function (e) {
 			if (e.key === "Escape" && askPanel && !askPanel.hidden) closePanel(true);
 		});
@@ -3440,9 +3457,7 @@ const PAGE_JS = `
 	}
 
 	if (chatUrl && chatSend) chatSend.addEventListener("click", sendChat);
-	if (chatUrl && chatText) chatText.addEventListener("keydown", function (e) {
-		if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
-	});
+	if (chatUrl && chatText) bindEnterSend(chatText, sendChat);
 
 	/* ---------- export HTML (offline snapshot: clone -> sanitize -> freeze -> inline images -> download) ---------- */
 

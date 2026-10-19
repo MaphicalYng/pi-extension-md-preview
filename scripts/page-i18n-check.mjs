@@ -304,7 +304,16 @@ const submitPanelBody = (pageSrc.match(/function submitPanel\(\) \{([\s\S]*?)\n\
 check(submitPanelBody.length > 0, "could not extract the submitPanel body from page.ts");
 check(/stashPanel\(true\)/.test(submitPanelBody) && /closePanel\(true\)/.test(submitPanelBody), "send must stash then close the panel");
 check(/sendQueue\("rev"\)/.test(submitPanelBody) && /sendQueue\("ask"\)/.test(submitPanelBody), "send must flush the matching queue");
-check(/e\.key === "Enter" && !e\.shiftKey\) \{ e\.preventDefault\(\); submitPanel\(\); \}/.test(pageSrc), "Enter must still go through submitPanel (stash + send + close)");
+check(/bindEnterSend\(panelInput, submitPanel\)/.test(pageSrc), "Enter must still go through submitPanel (stash + send + close)");
+check(/bindEnterSend\(chatText, sendChat\)/.test(pageSrc), "Enter in the global chat must still send");
+// IME safety: Enter that confirms a candidate must never submit. Chromium reports
+// isComposing/keyCode 229; Safari fires Enter right after compositionend.
+const enterBody = (pageSrc.match(/function bindEnterSend\(el, send\) \{([\s\S]*?)\n\t\}/) || [null, ""])[1];
+check(enterBody.length > 0, "could not extract the bindEnterSend body from page.ts");
+check(/if \(e\.key !== "Enter" \|\| e\.shiftKey\) return;/.test(enterBody), "bindEnterSend must only act on a plain Enter");
+check(/composing \|\| e\.isComposing \|\| e\.keyCode === 229/.test(enterBody), "Enter during IME composition must not submit");
+check(/compositionstart/.test(enterBody) && /compositionend/.test(enterBody), "bindEnterSend must track the composition lifecycle");
+check(/setTimeout\(function \(\) \{ composing = false; \}, 0\)/.test(enterBody), "Safari's trailing Enter after compositionend must be swallowed");
 
 /* 5d. Regression pins for defects found in review round 1. Each one fails on the old code. */
 // (a) Both queue buttons must actually flush their queue.
