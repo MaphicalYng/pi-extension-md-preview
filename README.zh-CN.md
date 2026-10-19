@@ -42,7 +42,7 @@
 包发布在 npm：[`pi-md-preview`](https://www.npmjs.com/package/pi-md-preview)；Pi 官网上也有对应的包页面（含 manifest 与 README）：[`pi.dev/packages/pi-md-preview`](https://pi.dev/packages/pi-md-preview)。
 
 ```bash
-pi install npm:pi-md-preview@0.3.0
+pi install npm:pi-md-preview@0.4.0
 ```
 
 安装后重启 pi 会话即可。只想临时试用一次、不写入 settings：

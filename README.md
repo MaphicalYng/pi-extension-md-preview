@@ -42,7 +42,7 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 The package is published on npm as [`pi-md-preview`](https://www.npmjs.com/package/pi-md-preview), and has a page on the Pi site with its manifest and README: [`pi.dev/packages/pi-md-preview`](https://pi.dev/packages/pi-md-preview).
 
 ```bash
-pi install npm:pi-md-preview@0.3.0
+pi install npm:pi-md-preview@0.4.0
 ```
 
 Restart your Pi session after installing. To try it for one invocation without installing:
