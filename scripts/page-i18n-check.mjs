@@ -88,11 +88,36 @@ if (!exportMatch) {
 	check(body.includes('getAttribute("data-export-i18n")'), "EXPORT_JS does not read the frozen data-export-i18n copy");
 }
 check(!HAN.test(pageSrc), "page.ts still contains Chinese characters");
+
+/* 3b. Every i18n key referenced from PAGE_JS or from a data-i18n anchor must exist in
+   both bundles. PAGE_JS is a plain string, so tsc cannot catch a typo like T.revDoneToast. */
+const PAGE_JS_SRC = (pageSrc.match(/const PAGE_JS = `([\s\S]*?)`;/) || [null, ""])[1];
+check(PAGE_JS_SRC.length > 0, "could not extract the PAGE_JS template from page.ts");
+const keySet = new Set(enKeys);
+const tRefs = new Set();
+for (const m of PAGE_JS_SRC.matchAll(/\bT\.([A-Za-z_$][\w$]*)/g)) tRefs.add(m[1]);
+const missingT = Array.from(tRefs).filter((k) => !keySet.has(k));
+check(tRefs.size > 0, "PAGE_JS does not reference any T.<key>");
+check(missingT.length === 0, "PAGE_JS references i18n keys missing from both bundles: " + missingT.join(", "));
+const anchorKeys = new Set();
+for (const m of pageSrc.matchAll(/data-i18n(?:-aria|-placeholder|-title)?="([A-Za-z][\w]*)"/g)) anchorKeys.add(m[1]);
+const missingAnchors = Array.from(anchorKeys).filter((k) => !keySet.has(k));
+check(anchorKeys.size > 0, "renderPage emits no data-i18n anchors");
+check(missingAnchors.length === 0, "data-i18n anchors reference missing keys: " + missingAnchors.join(", "));
+check(!/T\.(?:revDoneToast|resDoneToast)\b/.test(PAGE_JS_SRC), "PAGE_JS still references a removed revise-toast key");
 check(pageSrc.includes('clone.setAttribute("data-export-i18n", JSON.stringify(T))'), "buildExportDocument does not freeze data-export-i18n");
+const CLONE_STRIP = ["exportBtn", "downloadBtn", "qaSelBtn", "revSelBtn", "qaSelBar", "askPanel", "langSeg", "qaModal", "queueGroup", "revToast"];
 check(
-	pageSrc.includes('removeInClone(clone, ["exportBtn", "downloadBtn", "qaSelBtn", "askPanel", "langSeg", "qaModal"])'),
-	"export does not strip the language switch group (langSeg)",
+	pageSrc.includes(
+		'removeInClone(clone, ["exportBtn", "downloadBtn", "qaSelBtn", "revSelBtn", "qaSelBar", "askPanel", "langSeg", "qaModal", "queueGroup", "revToast"])',
+	),
+	"export does not strip every UI-only node via the pinned removeInClone list",
 );
+const cloneStripCall = pageSrc.match(/removeInClone\(clone, \[([^\]]*)\]\)/);
+const strippedIds = cloneStripCall ? Array.from(cloneStripCall[1].matchAll(/"([^"]+)"/g), (m) => m[1]) : [];
+for (const id of CLONE_STRIP) {
+	check(strippedIds.includes(id), "export does not strip #" + id);
+}
 check(pageSrc.includes('if (d.lang === "en" || d.lang === "zh")'), "PAGE_JS does not consume the SSE lang field");
 check(pageSrc.includes('if (chosen !== "en" && chosen !== "zh") applyLang(d.lang);'), "SSE lang must not override a localStorage choice");
 check(pageSrc.includes("localStorage.setItem(\"mdp.lang\", v)"), "language switch does not remember mdp.lang");
@@ -199,6 +224,112 @@ check(
 	/content\.innerHTML = d\.html;[\s\S]{0,400}applyStaticStrings\(\);/.test(pageSrc),
 	"content updates must re-apply static i18n strings (admonition titles)",
 );
+
+/* 5c. Batch ask/revise queue (module C): the stashed queues, the toolbar and the revise wash. */
+for (const id of [
+	"queueGroup",
+	"askQueueBtn",
+	"revQueueBtn",
+	"askQueueBadge",
+	"revQueueBadge",
+	"askQueueLabel",
+	"revQueueLabel",
+	"qaSelBar",
+	"qaSelBtn",
+	"revSelBtn",
+	"revToast",
+]) {
+	check(en.includes('id="' + id + '"'), "render is missing #" + id);
+}
+for (const [label, html] of [
+	["en", en],
+	["zh", zh],
+]) {
+	check(html.includes('id="qaSelBar"'), label + " render must wrap both selection actions in one toolbar");
+	check(html.includes('data-i18n="queueAskBtn"'), label + " render must localize the queue label dynamically");
+	check(/id="queueGroup"[^>]*hidden/.test(html), label + " render must start with the queue group hidden");
+	check(html.includes('aria-live="polite" id="revToast"') || html.includes('id="revToast" role="status" aria-live="polite"'), label + " render must expose revToast as a live region");
+}
+// The selection toolbar must exist for ask OR revise, never only for ask.
+check(pageSrc.includes('var canAsk = !!(askUrl || askBatchUrl);') && pageSrc.includes("var canRev = !!reviseUrl;"), "canAsk/canRev no longer cover both batch endpoints");
+check(pageSrc.includes("if (canAsk || canRev) {") && pageSrc.includes("if (!canAsk && !canRev) { selBar.hidden = true; return; }"), "the selection toolbar must install for ask OR revise");
+check(pageSrc.includes('var REV_HOLD = 2200;') && pageSrc.includes('var REV_WINDOW = 3000;'), "revision flash timing constants changed");
+// Regression pin (round 3): a paragraph whose one sentence the agent rewrote lost its wash
+// because the whole quote and its 80/48/24 prefixes all missed. Clauses still match.
+check(/function locClauses\(quote\)/.test(pageSrc), "locateBlocks has no clause fallback: an edited sentence loses its wash");
+check(/split\(\/\[[^\]]*、：:/.test(pageSrc), "the clause splitter lost its punctuation set");
+check(/、：:[\\]{2}n\]/.test(pageSrc), "the splitter must escape its newline: a raw newline breaks the regex literal in the page");
+check(/if \(needle\.length >= LOC_MIN\) out\.push\(needle\)/.test(pageSrc), "clauses shorter than LOC_MIN must not become needles");
+check(/out\.sort\(function \(a, b\) \{ return b\.length - a\.length; \}\)/.test(pageSrc), "clauses must be tried longest first");
+const locateBody = (pageSrc.match(/function locateBlocks\(idx, quote\) \{([\s\S]*?)\n\t\}/) || [null, ""])[1];
+check(locateBody.length > 0, "could not extract the locateBlocks body from page.ts");
+check(/locClauses\(quote\)/.test(locateBody), "locateBlocks never consults the clauses");
+check(/locRange\(idx, clauses\[c\]\)/.test(locateBody), "locateBlocks does not retry the clauses through locRange");
+check(/seen\.indexOf\(block\)/.test(locateBody), "locateBlocks does not dedupe clause hits");
+check(/out\.length < cap/.test(locateBody) && /var cap = REV_MAX_BLOCKS \|\| 40;/.test(locateBody), "clause hits are not capped by REV_MAX_BLOCKS (with a hoisting-proof fallback)");
+check(pageSrc.includes('"revision-done"'), "PAGE_JS does not handle the revision-done SSE event");
+check(/flashRevision\(\);[\s\S]{0,600}?restoreQaHighlights\(\);|restoreQaHighlights\(\);[\s\S]{0,600}?flashRevision\(\);/.test(pageSrc), "content updates must replay the revision wash after re-rendering");
+check(/qdropItems\(kind, source\.slice\(0, take\)\)/.test(pageSrc), "a successful batch send must drop the sent snapshot, not the server ids");
+// Regression pin (round 3): server ids never match the local queue, so dropping by them
+// silently leaves the badge and localStorage full forever.
+check(/function qdropItems\(kind, items\)/.test(pageSrc), "qdropItems is missing: the queue cannot be cleared by snapshot");
+check(/ids\.indexOf\(QS\[kind\]\[j\]\.id\) < 0/.test(pageSrc), "qdropItems must match on the local id (a qsave re-materializes the objects)");
+check(!/qdrop\(kind,/.test(pageSrc), "sendQueue must not drop by the ids the server returns");
+check(/var take = accepted \? Math\.min\(accepted\.length, source\.length\) : source\.length;/.test(pageSrc), "the accepted prefix must be clamped to the sent snapshot length");
+check(pageSrc.includes('{ quote: source[i].quote, question: source[i].text }'), "ask-batch payload shape changed");
+check(pageSrc.includes('{ quote: source[i].quote, comment: source[i].text }'), "revise payload shape changed");
+// Cap drift (round 4): the page sends the whole queue as one batch, so QCAP must track the
+// server's MAX_BATCH_ITEMS. A larger page cap deadlocks the queue at 21+ items.
+const serverSrc = readFileSync(join(root, "extensions", "md-preview", "server.ts"), "utf8");
+const batchCap = Number((serverSrc.match(/export const MAX_BATCH_ITEMS = (\d+);/) || [null, ""])[1]);
+const pageCap = Number((pageSrc.match(/var QCAP = (\d+);/) || [null, ""])[1]);
+check(Number.isFinite(batchCap) && batchCap > 0, "could not read MAX_BATCH_ITEMS from server.ts");
+check(pageCap === batchCap, "QCAP (" + pageCap + ") must equal server.ts MAX_BATCH_ITEMS (" + batchCap + ")");
+check(/if \(qcount\(kind\) >= QCAP\) \{ toast\(T\.queueFull\); return false; \}/.test(pageSrc), "qpush must reject an over-cap item and keep the panel open");
+for (const lang of ["en", "zh"]) {
+	check(String(STRINGS[lang].queueFull).indexOf(String(batchCap)) >= 0, "STRINGS." + lang + ".queueFull must state the real batch cap (" + batchCap + ")");
+}
+// Stashing must close the panel, but only after the draft really entered the queue.
+const stashClick = (pageSrc.match(/if \(panelStash\) panelStash\.addEventListener\("click", ([^\n]*)\);/ ) || [null, ""])[1];
+check(stashClick.length > 0, "#qaPanelStash lost its click listener");
+check(/stashPanel\(/.test(stashClick), "#qaPanelStash no longer stashes the draft");
+check(/closePanel\(true\)/.test(stashClick), "#qaPanelStash does not close the panel: the next selection inherits the old quote");
+check(/if \(stashPanel\(false\)\)/.test(stashClick), "#qaPanelStash must keep the panel open when the stash fails (empty draft)");
+// Cancel and Escape only close; send is stash + close + flush.
+check(/cancelBtn\.addEventListener\("click", function \(\) \{ closePanel\(true\); \}\)/.test(pageSrc), "the cancel button must close without queueing");
+const escHandler = (pageSrc.match(/if \(e\.key === "Escape" && askPanel && !askPanel\.hidden\) ([^\n]*);/) || [null, ""])[1];
+check(escHandler.length > 0, "Escape no longer closes the panel");
+check(/closePanel\(true\)/.test(escHandler) && !/stashPanel/.test(escHandler), "Escape must close the panel without stashing");
+const submitPanelBody = (pageSrc.match(/function submitPanel\(\) \{([\s\S]*?)\n\t\}/) || [null, ""])[1];
+check(submitPanelBody.length > 0, "could not extract the submitPanel body from page.ts");
+check(/stashPanel\(true\)/.test(submitPanelBody) && /closePanel\(true\)/.test(submitPanelBody), "send must stash then close the panel");
+check(/sendQueue\("rev"\)/.test(submitPanelBody) && /sendQueue\("ask"\)/.test(submitPanelBody), "send must flush the matching queue");
+check(/e\.key === "Enter" && !e\.shiftKey\) \{ e\.preventDefault\(\); submitPanel\(\); \}/.test(pageSrc), "Enter must still go through submitPanel (stash + send + close)");
+
+/* 5d. Regression pins for defects found in review round 1. Each one fails on the old code. */
+// (a) Both queue buttons must actually flush their queue.
+check(pageSrc.includes('askQueueBtn.addEventListener("click"'), "#askQueueBtn has no click handler: the ask queue can never be sent");
+check(pageSrc.includes('revQueueBtn.addEventListener("click"'), "#revQueueBtn has no click handler: the revise queue can never be sent");
+check(/askQueueBtn\.addEventListener\("click", function \(\) \{ sendQueue\("ask"\); \}\)/.test(pageSrc), "#askQueueBtn does not call sendQueue('ask')");
+check(/revQueueBtn\.addEventListener\("click", function \(\) \{ sendQueue\("rev"\); \}\)/.test(pageSrc), "#revQueueBtn does not call sendQueue('rev')");
+// (b) init/update frames must adopt d.revision (the revision-done frame may arrive first).
+const applyUpdateBody = (pageSrc.match(/function applyUpdate\(d, quiet\) \{([\s\S]*?)\n\t\}/) || [null, ""])[1];
+check(applyUpdateBody.length > 0, "could not extract the applyUpdate body from page.ts");
+check(/d\.revision/.test(applyUpdateBody), "applyUpdate ignores d.revision: an update that lands after revision-done never re-locates the flash");
+check(/applyRevision\(/.test(applyUpdateBody), "applyUpdate does not replay d.revision through applyRevision");
+// (c) A 200 with ok:false is a rejection, not a success.
+const sendQueueBody = (pageSrc.match(/function sendQueue\(kind\) \{([\s\S]*?)\n\t\}/) || [null, ""])[1];
+check(sendQueueBody.length > 0, "could not extract the sendQueue body from page.ts");
+check(/data\.ok === false/.test(sendQueueBody), "sendQueue treats an {ok:false} response as success");
+check(/qdropItems\(kind, source\.slice\(0, take\)\)/.test(sendQueueBody), "sendQueue drops the whole queue instead of the accepted prefix");
+check(/Math\.min\(accepted\.length, source\.length\)/.test(sendQueueBody), "sendQueue does not clamp the accepted prefix to the snapshot");
+// (d) Empty drafts never enter the queue, and closing the panel ends the selection.
+check(/if \(!quote\.trim\(\) \|\| !text\.trim\(\)\) continue;/.test(pageSrc), "qstrip keeps entries with an empty quote or comment");
+const closePanelBody = (pageSrc.match(/function closePanel\(refocus\) \{([\s\S]*?)\n\t\}/) || [null, ""])[1];
+check(/removeAllRanges\(\)/.test(closePanelBody) && /pendingRange = null;/.test(closePanelBody), "closePanel does not clear the selection and pendingRange");
+// (e) The revise copy promises the document, not just the marks.
+check(STRINGS.en.reviseDone.indexOf("document has been updated") >= 0, "STRINGS.en.reviseDone text was not updated");
+check(STRINGS.zh.reviseDone.indexOf("文档已更新") >= 0, "STRINGS.zh.reviseDone text was not updated");
 
 /* Report. */
 if (failures.length) {

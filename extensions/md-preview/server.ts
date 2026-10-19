@@ -100,15 +100,93 @@ export interface QaPayload {
 	answeredAt: number | null;
 }
 
-/** onAsk callback payload; chat notices additionally carry the document's earlier chat entries. */
+/**
+ * onAsk payload for one selected-text question or one chat message; chat notices additionally carry
+ * the document's earlier chat entries. `batch` stays undefined so the AskEvent union narrows.
+ */
 export type AskNotice = QaEntry & {
 	title: string;
 	/** Earlier chat entries of the same document, oldest first; chat notices only. */
 	history?: QaEntry[];
+	/** Discriminant: a single-question notice never carries a batch. */
+	batch?: undefined;
 };
+
+/** One batch of selected-text questions; onAsk fires exactly once per batch, never once per item. */
+export interface AskBatchNotice {
+	batch: true;
+	docId: string;
+	title: string;
+	/** Entries created by this batch, in request order; every id needs its own md_preview_reply. */
+	items: QaEntry[];
+	/** Other selected-text entries of the same document that still await an answer (excludes this batch). */
+	history: QaEntry[];
+	askedAt: number;
+}
+
+/** onAsk payload union: one single question/chat message, or one whole batch of questions. */
+export type AskEvent = AskNotice | AskBatchNotice;
+
+/** One staged revision comment (a passage the user marked plus the edit they asked for). */
+export interface RevisionItem {
+	quote: string;
+	comment: string;
+}
+
+/** Revision batch pushed to the agent through onRevise; one notice per batch, never per item. */
+export interface RevisionNotice {
+	batchId: number;
+	docId: string;
+	title: string;
+	/** Absolute path of the Markdown file the agent must edit. */
+	filePath: string;
+	items: RevisionItem[];
+	requestedAt: number;
+}
+
+/** Persisted revision batch; at most one per document (the newest wins). */
+export interface RevisionRecord {
+	batchId: number;
+	docId: string;
+	title: string;
+	filePath: string;
+	items: RevisionItem[];
+	createdAt: number;
+	/** Render version the batch was requested against (diagnostics only). */
+	baseVersion: number;
+	doneAt?: number;
+	highlights: string[];
+	/** Batch id that replaced this one before it was marked done (observability only). */
+	supersededBy?: number;
+}
+
+/** Page-facing view of a completed batch: embedded in the page and in the SSE init frame. */
+export interface RevisionState {
+	batchId: number;
+	highlights: string[];
+	at: number;
+}
 
 const MAX_QA_PER_DOC = 50;
 const MAX_CHAT_PER_DOC = 100; // per-doc chat cap; only chat entries are trimmed
+/** Cap on one batch request (questions or revision comments). */
+export const MAX_BATCH_ITEMS = 20;
+/** Hard cap on a batch request body; larger bodies are rejected with 413 before parsing. */
+const MAX_BATCH_BODY_BYTES = 256 * 1024;
+/** Cap on highlight fragments per batch. */
+export const MAX_HIGHLIGHTS = MAX_BATCH_ITEMS;
+/** Cap on one highlight fragment. */
+export const MAX_HIGHLIGHT_LEN = 300;
+
+/**
+ * Recovery window of one revision record, measured from doneAt (while pending: from createdAt).
+ * Exposed as a function so the smoke test can shrink it (MD_PREVIEW_REVISION_TTL_MS is a test
+ * hook, not a user-facing setting).
+ */
+function revisionTtlMs(): number {
+	const raw = Number(process.env.MD_PREVIEW_REVISION_TTL_MS);
+	return Number.isFinite(raw) && raw > 0 ? raw : 10 * 60_000;
+}
 
 // ----------------------------------------------------------- version (footer)
 
@@ -201,7 +279,13 @@ const CONTENT_TYPES: Record<string, string> = {
 // page.ts (module B) adds `lang` and `mermaidUrl` to PageOptions later; declaring the extra
 // fields here keeps both modules type-checking independently. Intersections are
 // idempotent, so this stays valid after module B lands.
-type RenderPageArgs = Parameters<typeof renderPage>[0] & { lang?: UiLang; chatUrl?: string; mermaidUrl?: string };
+type RenderPageArgs = Parameters<typeof renderPage>[0] & {
+	lang?: UiLang;
+	chatUrl?: string;
+	mermaidUrl?: string;
+	/** Completed revision batch the page replays its highlights from; null/undefined = nothing to mark. */
+	revision?: RevisionState | null;
+};
 
 export class PreviewServer {
 	private server: http.Server;
@@ -218,10 +302,20 @@ export class PreviewServer {
 	private noViewerSince: number | null = null;
 	private shuttingDown = false;
 	private onShutdown?: (reason: string) => void;
-	/** Callback fired when the preview page receives a question or chat message (the extension uses it to inject the message into the pi session and wake the agent). */
-	onAsk: ((qa: AskNotice) => void) | null = null;
+	/**
+	 * Callback fired when the preview page receives a question, a chat message, or a whole batch of questions
+	 * (the extension injects the message into the pi session and wakes the agent).
+	 */
+	onAsk: ((event: AskEvent) => void) | null = null;
+	/** Callback fired when the preview page submits a batch of revision comments (wakes the agent to edit the file). */
+	onRevise: ((notice: RevisionNotice) => void) | null = null;
 	private qa = new Map<string, QaEntry>();
 	private qaSeq = 0;
+	/** Newest revision batch per document id. */
+	private revisions = new Map<string, RevisionRecord>();
+	private revisionSeq = 0;
+	/** Most recently opened or navigated document; fallback when a tool call omits `doc`. */
+	private lastActiveDocId: string | null = null;
 	port = 0;
 	/** Address actually bound by `listen()`: may be a wildcard such as 0.0.0.0, unlike `PreviewHandle.host`. */
 	readonly host: string;
@@ -329,6 +423,7 @@ export class PreviewServer {
 
 	private handleFor(doc: DocState, reused: boolean): PreviewHandle {
 		this.byPath.set(doc.filePath, doc);
+		this.lastActiveDocId = doc.id;
 		return {
 			url: this.withToken(`http://${urlHostFor(this.host)}:${this.port}/doc/${doc.id}`),
 			docId: doc.id,
@@ -467,8 +562,11 @@ export class PreviewServer {
 		return [...this.qa.values()].filter((e) => e.docId === docId).map((e) => this.qaPayload(e));
 	}
 
-	/** The preview page submitted a question: persist it, broadcast the SSE ask event, and let the extension inject it into the pi session. */
-	ask(doc: DocState, quote: string, question: string): QaEntry {
+	/**
+	 * Persist one selected-text question and push it to every open tab.
+	 * Does not wake the agent and does not bump the document version.
+	 */
+	private persistAsk(doc: DocState, quote: string, question: string): QaEntry {
 		const entry: QaEntry = { id: `q${++this.qaSeq}`, docId: doc.id, quote, question, askedAt: Date.now() };
 		this.qa.set(entry.id, entry);
 		// Only selected-text questions count against this cap: chat entries have their own.
@@ -476,18 +574,63 @@ export class PreviewServer {
 		if (selected.length > MAX_QA_PER_DOC) {
 			for (const old of selected.slice(0, selected.length - MAX_QA_PER_DOC)) this.qa.delete(old.id);
 		}
+		this.broadcastEvent(doc.id, "ask", JSON.stringify(this.qaPayload(entry)));
+		return entry;
+	}
+
+	/** The preview page submitted a question: persist it, broadcast the SSE ask event, and let the extension inject it into the pi session. */
+	ask(doc: DocState, quote: string, question: string): QaEntry {
+		const entry = this.persistAsk(doc, quote, question);
 		// Advance the document version without broadcasting an update: it invalidates the `v` of every open
 		// EventSource, so a tab whose link dropped re-fetches the full init frame on its automatic reconnect
 		// (bringing along any question that arrived while the link was down). Online tabs are unaffected:
-		// they still receive the ask/answer events below.
+		// they still receive the ask event below.
 		doc.version++;
-		this.broadcastEvent(doc.id, "ask", JSON.stringify(this.qaPayload(entry)));
 		try {
 			this.onAsk?.({ ...entry, title: this.titleFor(doc) });
 		} catch {
 			/* failing to inject into the pi session must not block the question itself */
 		}
 		return entry;
+	}
+
+	/**
+	 * The preview page submitted a batch of selected-text questions: persist every item (each still
+	 * broadcasts its own ask frame) but bump the version and wake the agent exactly once for the batch.
+	 */
+	askBatch(docId: string, items: { quote: string; question: string }[]): QaEntry[] {
+		const doc = this.docs.get(docId);
+		if (!doc || items.length === 0) return []; // defensive: the route already rejects empty batches with 400
+		const created: QaEntry[] = [];
+		try {
+			for (const item of items) created.push(this.persistAsk(doc, item.quote, item.question));
+		} finally {
+			// Partial success still wakes the agent for whatever was persisted.
+			if (created.length > 0) {
+				doc.version++; // exactly one bump for the whole batch
+				const ids = new Set(created.map((e) => e.id));
+				try {
+					this.onAsk?.({
+						batch: true,
+						docId: doc.id,
+						title: this.titleFor(doc),
+						items: created,
+						history: this.pendingSelected(doc.id, ids),
+						askedAt: created[created.length - 1]?.askedAt ?? Date.now(),
+					});
+				} catch {
+					/* injection failure must not drop the questions */
+				}
+			}
+		}
+		return created;
+	}
+
+	/** Selected-text entries of a document that still await an answer, optionally excluding ids. */
+	private pendingSelected(docId: string, exclude?: Set<string>): QaEntry[] {
+		return [...this.qa.values()].filter(
+			(e) => e.docId === docId && !e.chat && !e.answerHtml && !(exclude?.has(e.id) ?? false),
+		);
 	}
 
 	/** The preview page chat box submitted a message: persist it, broadcast the SSE ask event (chat: true), and let the extension inject it into the pi session. */
@@ -545,6 +688,186 @@ export class PreviewServer {
 		return { ok: true, message: `Answered preview question ${entry.id}; the reply card has been pushed to the browser.` };
 	}
 
+	// ------------------------------------------------------------- revisions
+
+	/**
+	 * The preview page submitted a batch of revision comments: store the newest batch of the
+	 * document and wake the agent once for the whole batch. No QaEntry is created and the
+	 * render version is untouched (the file watcher owns content updates).
+	 */
+	revise(docId: string, items: { quote: string; comment: string }[]): { batchId: number; count: number } {
+		const doc = this.docs.get(docId);
+		if (!doc || items.length === 0) return { batchId: 0, count: 0 }; // documented no-op
+		const prev = this.revisions.get(doc.id);
+		const batchId = ++this.revisionSeq;
+		if (prev && prev.doneAt === undefined) prev.supersededBy = batchId; // newest batch wins
+		const record: RevisionRecord = {
+			batchId,
+			docId: doc.id,
+			title: this.titleFor(doc),
+			filePath: doc.filePath,
+			items: items.map((i) => ({ quote: i.quote, comment: i.comment })),
+			createdAt: Date.now(),
+			baseVersion: doc.version,
+			highlights: [],
+		};
+		this.revisions.set(doc.id, record);
+		this.lastActiveDocId = doc.id;
+		try {
+			this.onRevise?.({
+				batchId,
+				docId: doc.id,
+				title: record.title,
+				filePath: record.filePath,
+				items: record.items,
+				requestedAt: record.createdAt,
+			});
+		} catch {
+			/* injection failure must not lose the batch record */
+		}
+		return { batchId, count: record.items.length };
+	}
+
+	/**
+	 * md_preview_revision_done tool entry point: mark the newest revision batch done, push the
+	 * edited HTML first and only then broadcast the highlights every open tab must mark.
+	 */
+	async revisionDone(
+		docId: string | undefined,
+		highlights?: string[],
+	): Promise<{ ok: boolean; message: string; docId?: string; batchId?: number }> {
+		const target = this.resolveRevisionTarget(docId);
+		if ("error" in target) return { ok: false, message: target.error };
+		const doc = target.doc;
+		const rec = this.revisionRecord(doc.id);
+		if (!rec) {
+			return {
+				ok: false,
+				message:
+					`No revision batch is pending for "${this.titleFor(doc)}" (${doc.id}); the last batch expired after ` +
+					`${Math.round(revisionTtlMs() / 60_000)} minutes. The file edits are kept - ask the user to re-send the ` +
+					"revision comments from the preview page if the highlight is still needed.",
+			};
+		}
+		const clean = (highlights ?? [])
+			.map((h) => (h ?? "").trim())
+			.filter(Boolean)
+			.slice(0, MAX_HIGHLIGHTS)
+			.map((h) => (h.length > MAX_HIGHLIGHT_LEN ? h.slice(0, MAX_HIGHLIGHT_LEN) : h));
+		if (clean.length > 0) rec.highlights = clean; // an omitted list keeps earlier highlights (idempotent re-call)
+		const repeat = rec.doneAt !== undefined;
+		const doneAt = rec.doneAt ?? Date.now(); // a second call must not extend the recovery window
+		rec.doneAt = doneAt;
+
+		// Ordering: every tab must already hold the edited HTML before it is told what to mark.
+		const before = doc.version;
+		await this.refreshIfStale(doc);
+		if (doc.version !== before) this.broadcastUpdate(doc);
+		const state: RevisionState = { batchId: rec.batchId, highlights: rec.highlights, at: doneAt };
+		this.broadcastEvent(doc.id, "revision-done", JSON.stringify({ docId: doc.id, ...state }));
+
+		const match = await this.matchHighlights(doc, rec.highlights);
+		const tabs = doc.viewers.size;
+		const head = repeat
+			? `Revision batch #${rec.batchId} was already marked done; highlights refreshed on "${rec.title}" (${doc.id}).`
+			: `Revision batch #${rec.batchId} marked done on "${rec.title}" (${doc.id}): ${rec.highlights.length} highlight(s) pushed to ${tabs} open tab(s).`;
+		const missNote = match.missed.length
+			? ` ${match.missed.length} highlight(s) did not match the file bytes verbatim (Markdown markers are stripped on the page, so they may still mark correctly): ${match.missed.map((h: string) => JSON.stringify(h)).join(", ")}.`
+			: "";
+		return { ok: true, message: `${head}${missNote}`, docId: doc.id, batchId: rec.batchId };
+	}
+
+	/** Expiry-checked revision record lookup; deletes the record once its window has passed. */
+	private revisionRecord(docId: string): RevisionRecord | null {
+		const rec = this.revisions.get(docId);
+		if (!rec) return null;
+		const expiresAt = (rec.doneAt ?? rec.createdAt) + revisionTtlMs();
+		if (Date.now() > expiresAt) {
+			this.revisions.delete(docId);
+			return null;
+		}
+		return rec;
+	}
+
+	/** Page payload of a completed batch; null while pending or after expiry (pending batches paint no stale marks). */
+	private revisionState(docId: string): RevisionState | null {
+		const rec = this.revisionRecord(docId);
+		return rec && rec.doneAt !== undefined
+			? { batchId: rec.batchId, highlights: rec.highlights, at: rec.doneAt }
+			: null;
+	}
+
+	/** Resolve a document by id or by absolute/relative Markdown path. */
+	private docByRef(ref: string): DocState | null {
+		const byId = this.docs.get(ref);
+		if (byId) return byId;
+		let abs: string;
+		try {
+			abs = path.resolve(ref);
+		} catch {
+			return null;
+		}
+		const byResolved = this.byPath.get(abs);
+		if (byResolved) return byResolved;
+		// Fallback for a document whose byPath entry no longer matches (defensive, byPath is kept in sync).
+		for (const doc of this.docs.values()) if (doc.filePath === abs) return doc;
+		return null;
+	}
+
+	/**
+	 * Resolve the tool's `doc` argument: id, absolute/relative file path, or the most recently
+	 * active document. Never guesses between several equally plausible documents.
+	 */
+	private resolveRevisionTarget(docId: string | undefined): { doc: DocState } | { error: string } {
+		if (docId) {
+			const doc = this.docByRef(docId);
+			if (doc) return { doc };
+			return {
+				error:
+					`No previewed document matches "${docId}". Pass doc with a document id such as d1, ` +
+					"or the Markdown file path that was previewed.",
+			};
+		}
+		const withRevision = [...this.docs.values()].filter((d) => this.revisionRecord(d.id) !== null);
+		if (withRevision.length === 1) {
+			const only = withRevision[0];
+			if (only) return { doc: only };
+		}
+		const lastActive = this.lastActiveDocId ? this.docs.get(this.lastActiveDocId) : undefined;
+		if (lastActive) return { doc: lastActive };
+		if (this.docs.size === 1) {
+			const only = [...this.docs.values()][0];
+			if (only) return { doc: only };
+		}
+		if (this.docs.size === 0) {
+			return {
+				error:
+					"No Markdown preview document is open; pass doc with a document id such as d1, " +
+					"or the Markdown file path that was previewed.",
+			};
+		}
+		return {
+			error:
+				`Several previewed documents are open (${[...this.docs.values()].map((d) => d.id).join(", ")}); ` +
+				"pass doc with the document id that matches the revision request.",
+		};
+	}
+
+	/** Which highlight needles appear verbatim in the current file (an unreadable file counts as all missed). */
+	private async matchHighlights(doc: DocState, highlights: string[]): Promise<{ matched: string[]; missed: string[] }> {
+		if (highlights.length === 0) return { matched: [], missed: [] };
+		let source = "";
+		try {
+			source = await fs.promises.readFile(doc.filePath, "utf8");
+		} catch {
+			return { matched: [], missed: [...highlights] };
+		}
+		const matched: string[] = [];
+		const missed: string[] = [];
+		for (const h of highlights) (source.includes(h) ? matched : missed).push(h);
+		return { matched, missed };
+	}
+
 	// --------------------------------------------------------------- routes
 
 	private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -572,7 +895,7 @@ export class PreviewServer {
 		}
 		if (p === "/mermaid.mjs") return this.serveMermaid(res);
 		if (p.startsWith("/asset/")) return this.serveAsset(res, p.slice("/asset/".length));
-		const m = p.match(/^\/doc\/([^/]+)(\/events|\/close|\/ask|\/chat|\/download)?$/);
+		const m = p.match(/^\/doc\/([^/]+)(\/ask-batch|\/revise|\/events|\/close|\/ask|\/chat|\/download)?$/);
 		if (m) {
 			const token = m[1] ?? "";
 			const sub = m[2] ?? "";
@@ -580,6 +903,8 @@ export class PreviewServer {
 			if (!doc) return notFound(res, "document not found");
 			if (sub === "/events") return this.serveEvents(req, res, doc, url);
 			if (sub === "/close") return this.serveClose(req, res, doc, url);
+			if (sub === "/ask-batch") return this.serveAskBatch(req, res, doc);
+			if (sub === "/revise") return this.serveRevise(req, res, doc);
 			if (sub === "/ask") return this.serveAsk(req, res, doc);
 			if (sub === "/chat") return this.serveChat(req, res, doc);
 			if (sub === "/download") return this.serveDownload(res, doc);
@@ -641,6 +966,8 @@ export class PreviewServer {
 		this.docs.set(doc.id, doc);
 		this.byPath.set(filePath, doc);
 		this.roots.add(doc.rootDir);
+		// A document opened through a Markdown link is active too: md_preview_revision_done may omit `doc`.
+		this.lastActiveDocId = doc.id;
 		void this.refresh(doc).then(() => this.watch(doc));
 		return doc;
 	}
@@ -662,6 +989,10 @@ export class PreviewServer {
 			updateUrl: this.withToken(`/doc/${doc.id}/events?c=${cid}&v=${doc.version}`),
 			closeUrl: this.withToken(`/doc/${doc.id}/close?c=${cid}`),
 			askUrl: this.withToken(`/doc/${doc.id}/ask`),
+			// Batch endpoints carry their own tokens: the page hides the queue buttons and the
+			// "revise" action whenever these are missing, so they must be injected together with askUrl.
+			askBatchUrl: this.withToken(`/doc/${doc.id}/ask-batch`),
+			reviseUrl: this.withToken(`/doc/${doc.id}/revise`),
 			chatUrl: this.withToken(`/doc/${doc.id}/chat`),
 			qa: this.qaList(doc.id),
 			version: resolveVersion(),
@@ -673,6 +1004,7 @@ export class PreviewServer {
 			downloadUrl: this.withToken(`/doc/${doc.id}/download`),
 			mermaidUrl: this.withToken("/mermaid.mjs"),
 			lang: doc.uiLang,
+			revision: this.revisionState(doc.id),
 		};
 		const html = renderPage(args);
 		res.statusCode = 200;
@@ -754,6 +1086,68 @@ export class PreviewServer {
 		res.end(JSON.stringify(this.qaPayload(entry)));
 	}
 
+	/**
+	 * Batch entry point for staged selected-text questions: validates `{ items: [{ quote, question }] }`
+	 * and answers with every created payload, so the page can render its cards from the POST response.
+	 */
+	private async serveAskBatch(req: http.IncomingMessage, res: http.ServerResponse, doc: DocState): Promise<void> {
+		if (req.method !== "POST") {
+			res.statusCode = 405;
+			res.setHeader("Allow", "POST");
+			res.setHeader("Content-Type", "text/plain; charset=utf-8");
+			res.end("method not allowed");
+			return;
+		}
+		const body = await readBodyLimited(req, MAX_BATCH_BODY_BYTES);
+		res.setHeader("Content-Type", "application/json; charset=utf-8");
+		res.setHeader("Cache-Control", "no-store");
+		if (body === null) {
+			res.statusCode = 413;
+			res.end(JSON.stringify({ error: `request body exceeds ${MAX_BATCH_BODY_BYTES} bytes` }));
+			return;
+		}
+		const parsed = parseBatchItems(body, "question");
+		if (!parsed.ok) {
+			res.statusCode = 400;
+			res.end(JSON.stringify({ error: parsed.error ?? "invalid request" }));
+			return;
+		}
+		const entries = this.askBatch(doc.id, parsed.items.map((i) => ({ quote: i.quote, question: i.text })));
+		res.statusCode = 200;
+		res.end(JSON.stringify({ ok: true, count: entries.length, items: entries.map((e) => this.qaPayload(e)) }));
+	}
+
+	/**
+	 * Batch entry point for staged revision comments: validates `{ items: [{ quote, comment }] }`,
+	 * stores the newest batch of the document and wakes the agent once.
+	 */
+	private async serveRevise(req: http.IncomingMessage, res: http.ServerResponse, doc: DocState): Promise<void> {
+		if (req.method !== "POST") {
+			res.statusCode = 405;
+			res.setHeader("Allow", "POST");
+			res.setHeader("Content-Type", "text/plain; charset=utf-8");
+			res.end("method not allowed");
+			return;
+		}
+		const body = await readBodyLimited(req, MAX_BATCH_BODY_BYTES);
+		res.setHeader("Content-Type", "application/json; charset=utf-8");
+		res.setHeader("Cache-Control", "no-store");
+		if (body === null) {
+			res.statusCode = 413;
+			res.end(JSON.stringify({ error: `request body exceeds ${MAX_BATCH_BODY_BYTES} bytes` }));
+			return;
+		}
+		const parsed = parseBatchItems(body, "comment");
+		if (!parsed.ok) {
+			res.statusCode = 400;
+			res.end(JSON.stringify({ error: parsed.error ?? "invalid request" }));
+			return;
+		}
+		const result = this.revise(doc.id, parsed.items.map((i) => ({ quote: i.quote, comment: i.text })));
+		res.statusCode = 200;
+		res.end(JSON.stringify({ ok: true, batchId: result.batchId, count: result.count }));
+	}
+
 	private serveEvents(req: http.IncomingMessage, res: http.ServerResponse, doc: DocState, url: URL): void {
 		const clientId = url.searchParams.get("c") || `c${++this.connSeq}`;
 		const connId = `k${++this.connSeq}`;
@@ -765,7 +1159,7 @@ export class PreviewServer {
 		res.write("retry: 2000\n\n");
 		// A tab that loaded the page before the latest render syncs immediately.
 		if (url.searchParams.get("v") !== String(doc.version)) {
-			this.writeSse(res, "init", JSON.stringify({ html: doc.rendered.html, toc: doc.rendered.toc, title: this.titleFor(doc), qa: this.qaList(doc.id), lang: doc.uiLang }));
+			this.writeSse(res, "init", JSON.stringify({ html: doc.rendered.html, toc: doc.rendered.toc, title: this.titleFor(doc), qa: this.qaList(doc.id), lang: doc.uiLang, revision: this.revisionState(doc.id) }));
 		}
 		this.sseConns.set(connId, res);
 		this.connDoc.set(connId, doc.id);
@@ -931,6 +1325,12 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 
 	private sweep(): void {
 		if (this.shuttingDown) return;
+		// Release expired revision records; correctness does not depend on this pass
+		// because revisionRecord() re-checks expiry on every read.
+		const expiryNow = Date.now();
+		for (const [docId, rec] of this.revisions) {
+			if (expiryNow > (rec.doneAt ?? rec.createdAt) + revisionTtlMs()) this.revisions.delete(docId);
+		}
 		const viewers = this.sseConns.size;
 		if (viewers > 0) {
 			this.hadViewer = true;
@@ -973,6 +1373,8 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 		this.connDoc.clear();
 		this.docs.clear();
 		this.byPath.clear();
+		this.revisions.clear();
+		this.lastActiveDocId = null;
 		try {
 			this.server.closeAllConnections?.();
 		} catch {
@@ -1041,6 +1443,70 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 	});
 }
 
+/** Read a body up to maxBytes; resolves null when the limit is exceeded (caller answers 413). */
+function readBodyLimited(req: http.IncomingMessage, maxBytes: number): Promise<string | null> {
+	return new Promise((resolve) => {
+		req.setEncoding("utf8");
+		let data = "";
+		let bytes = 0;
+		let overflow = false;
+		req.on("data", (chunk: string) => {
+			if (overflow) return;
+			bytes += Buffer.byteLength(chunk, "utf8");
+			if (bytes > maxBytes) {
+				overflow = true;
+				data = "";
+				return;
+			}
+			data += chunk;
+		});
+			req.on("end", () => resolve(overflow ? null : data));
+		req.on("error", () => resolve(overflow ? null : data));
+		req.on("close", () => resolve(overflow ? null : data)); // aborted request: never leave the handler pending
+	});
+}
+
+interface ParsedBatchItem {
+	quote: string;
+	text: string;
+}
+
+/** Validation result of a batch body; `error` is set only when ok is false, `items` only when ok is true. */
+interface ParsedBatch {
+	ok: boolean;
+	error?: string;
+	items: ParsedBatchItem[];
+}
+
+/** Validate `{"items":[{quote, <textKey>}]}`: 1..20 entries, both fields trimmed non-empty and <= 2000 chars. */
+function parseBatchItems(body: string, textKey: "question" | "comment"): ParsedBatch {
+	const bad = (error: string): ParsedBatch => ({ ok: false, error, items: [] });
+	let parsed: unknown = null;
+	try {
+		parsed = JSON.parse(body);
+	} catch {
+		return bad("body must be a JSON object with an items array");
+	}
+	const obj = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+	const raw = obj.items;
+	if (!Array.isArray(raw)) return bad("items must be an array");
+	if (raw.length === 0 || raw.length > MAX_BATCH_ITEMS) return bad(`items must contain 1..${MAX_BATCH_ITEMS} entries`);
+	const items: ParsedBatchItem[] = [];
+	for (let i = 0; i < raw.length; i++) {
+		const it: unknown = raw[i];
+		if (!it || typeof it !== "object") return bad(`items[${i}] must be an object`);
+		const row = it as Record<string, unknown>;
+		const quote = typeof row.quote === "string" ? row.quote.trim() : "";
+		const text = typeof row[textKey] === "string" ? (row[textKey] as string).trim() : "";
+		if (!quote) return bad(`items[${i}].quote must be a non-empty string`);
+		if (quote.length > 2000) return bad(`items[${i}].quote must be at most 2000 characters`);
+		if (!text) return bad(`items[${i}].${textKey} must be a non-empty string`);
+		if (text.length > 2000) return bad(`items[${i}].${textKey} must be at most 2000 characters`);
+		items.push({ quote, text });
+	}
+	return { ok: true, items };
+}
+
 export function encodePathToken(absPath: string): string {
 	return Buffer.from(absPath, "utf8").toString("base64url");
 }
@@ -1063,13 +1529,15 @@ let starting: Promise<PreviewServer> | null = null;
 
 export function ensureServer(opts?: {
 	onShutdown?: (reason: string) => void;
-	onAsk?: (qa: AskNotice) => void;
+	onAsk?: (event: AskEvent) => void;
+	onRevise?: (notice: RevisionNotice) => void;
 	host?: string;
 }): Promise<PreviewServer> {
 	if (instance && instance.isOpen) return Promise.resolve(instance);
 	if (!starting) {
 		const server = new PreviewServer(opts?.onShutdown, resolveListenHost(opts?.host));
 		if (opts?.onAsk) server.onAsk = opts.onAsk;
+		if (opts?.onRevise) server.onRevise = opts.onRevise;
 		const boot = server.start().then(() => {
 			instance = server;
 			return server;

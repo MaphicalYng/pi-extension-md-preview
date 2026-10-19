@@ -50,6 +50,15 @@ export interface PageOptions {
 	prefsUrl?: string;
 	/** POST endpoint that submits a question about the selected text. */
 	askUrl?: string;
+	/** POST endpoint that submits the stashed question queue in one batch (body { items: [{ quote, question }] }). */
+	askBatchUrl?: string;
+	/** POST endpoint that submits the stashed revision queue in one batch (body { items: [{ quote, comment }] }). */
+	reviseUrl?: string;
+	/**
+	 * Completed revision batch to replay on load: the blocks its quotes touch get a short
+	 * highlight wash. null/undefined (or a stale `at`) means nothing to mark.
+	 */
+	revision?: { batchId: number; highlights: string[]; at: number } | null;
 	/** POST endpoint for bottom chat messages (body { message }); omitted = no chat area rendered. */
 	chatUrl?: string;
 	/**
@@ -996,10 +1005,19 @@ body {
 }
 :root[data-theme="dark"] .content mark.mdp-qa-hl { background: rgba(232, 137, 17, 0.42); }
 
-/* Selection Q&A interaction: floating button + ask panel. */
-.qa-sel-btn {
+/* Selection interaction: floating ask/revise bar + the shared ask panel. */
+.qa-sel-bar {
 	position: absolute;
 	z-index: 90;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	user-select: none;
+	-webkit-user-select: none;
+}
+.qa-sel-bar[hidden] { display: none; }
+
+.qa-sel-btn {
 	appearance: none;
 	border: 0;
 	background: var(--accent);
@@ -1014,6 +1032,9 @@ body {
 }
 :root[data-theme="dark"] .qa-sel-btn { color: #0e1116; }
 .qa-sel-btn:hover { background: var(--accent-hover); }
+/* Revise shares the shape but uses the amber of the QA markers. */
+.qa-sel-btn.rev { background: #e88911; }
+.qa-sel-btn.rev:hover { background: #d67c09; }
 
 .qa-panel {
 	position: absolute;
@@ -1027,6 +1048,13 @@ body {
 	padding: 12px;
 	font-size: 0.82rem;
 }
+.qa-panel-title {
+	font-weight: 650;
+	font-size: 0.84rem;
+	margin-bottom: 8px;
+}
+/* Stash sits on the left, send/cancel stay right-aligned. */
+.qa-panel-actions #qaPanelStash { margin-right: auto; }
 .qa-panel-quote {
 	border-left: 3px solid #e88911;
 	background: rgba(232, 137, 17, 0.1);
@@ -1069,6 +1097,100 @@ body {
 .qa-panel-actions button:hover { color: var(--text); border-color: var(--text-3); }
 .qa-panel-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 :root[data-theme="dark"] .qa-panel-actions button.primary { color: #0e1116; }
+
+/* ---------- stashed queues (topbar) + revision flash ---------- */
+
+.queue-group { display: flex; align-items: center; gap: 6px; }
+.queue-group[hidden] { display: none; }
+.qbtn {
+	appearance: none;
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	background: var(--bg-elev);
+	color: var(--text-2);
+	font: inherit;
+	font-size: 0.78rem;
+	height: 34px;
+	padding: 0 10px;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	cursor: pointer;
+	transition: background-color 0.18s var(--ease), color 0.18s var(--ease), opacity 0.18s var(--ease);
+}
+.qbtn:hover:not([disabled]) { background: var(--accent-soft); color: var(--text); }
+.qbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.qbtn[disabled] { opacity: 0.45; cursor: default; }
+.qbtn[aria-busy="true"] { opacity: 0.7; }
+.qbtn-ico { display: inline-flex; }
+.qbtn-ico svg { width: 15px; height: 15px; }
+.qbtn-badge {
+	min-width: 18px;
+	height: 18px;
+	padding: 0 5px;
+	border-radius: 999px;
+	background: var(--accent);
+	color: #fff;
+	font-size: 0.68rem;
+	font-weight: 700;
+	line-height: 18px;
+	text-align: center;
+	font-variant-numeric: tabular-nums;
+}
+:root[data-theme="dark"] .qbtn-badge { color: #0e1116; }
+.qbtn-badge[hidden] { display: none; }
+
+/* Revision completion: touched blocks get an amber wash anchored on the server timestamp. */
+:root {
+	--rev-bg: rgba(226, 138, 20, 0.16);
+	--rev-line: rgba(200, 118, 8, 0.45);
+}
+:root[data-theme="dark"] {
+	--rev-bg: rgba(235, 160, 45, 0.2);
+	--rev-line: rgba(235, 160, 45, 0.5);
+}
+.rev-flash {
+	background: var(--rev-bg) !important;
+	box-shadow: 0 0 0 2px var(--rev-line) !important;
+	border-radius: 6px;
+	transition: background-color 0.8s var(--ease), box-shadow 0.8s var(--ease);
+}
+.rev-flash.rev-fade { background: transparent !important; box-shadow: none !important; }
+
+.rev-toast {
+	position: fixed;
+	left: 50%;
+	bottom: 86px;
+	z-index: 80;
+	max-width: min(520px, calc(100vw - 32px));
+	padding: 9px 16px;
+	border-radius: 10px;
+	border: 1px solid var(--rev-line);
+	background: var(--bg-elev);
+	color: var(--text);
+	font-size: 0.8rem;
+	box-shadow: var(--shadow-2);
+	opacity: 0;
+	transform: translate(-50%, 8px);
+	pointer-events: none;
+	transition: opacity 0.22s var(--ease), transform 0.22s var(--ease);
+}
+.rev-toast.show { opacity: 1; transform: translate(-50%, 0); }
+.rev-toast[hidden] { display: none; }
+
+/* Screen-reader-only live region for queue state changes. */
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	border: 0;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
 
 /* ---------- document chat (bottom conversation) ---------- */
 
@@ -1157,6 +1279,9 @@ body {
 	.toc { display: none; }
 	.article { max-width: 100%; }
 	.layout.with-qa .qa-rail { display: none; }
+	/* Queue buttons drop their label: icon + badge keep a 32px tap target. */
+	.qbtn { min-width: 32px; padding: 0 7px; justify-content: center; }
+	.qbtn-label { display: none; }
 }
 @media (max-width: 720px) {
 	.topbar-inner { padding: 0 14px; gap: 10px; }
@@ -1167,6 +1292,24 @@ body {
 	.heading-anchor { display: none; }
 	.to-top { right: 16px; bottom: 16px; }
 	.chat { padding: 14px; }
+	/* The ask panel becomes a bottom drawer; openPanel clears the inline top/left. */
+	.qa-panel {
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		top: auto;
+		width: auto;
+		max-width: none;
+		max-height: 72vh;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		border-radius: 14px 14px 0 0;
+		padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+		box-shadow: 0 -10px 28px rgba(0, 0, 0, 0.18);
+	}
+	.qa-sel-btn { min-height: 38px; padding: 8px 14px; }
+	.rev-toast { bottom: 14px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1183,6 +1326,8 @@ body {
 	body { background: #fff; color: #000; }
 	.layout { display: block; padding: 0; }
 	.code-block { break-inside: avoid; }
+	.qa-sel-bar, .queue-group, .rev-toast, .sr-only { display: none !important; }
+	.rev-flash { background: none !important; box-shadow: none !important; }
 }
 `;
 
@@ -1440,6 +1585,7 @@ const PAGE_JS = `
 		// QA cards and chat turns were rebuilt from answerHtml above; re-apply the
 		// language to content-level anchors (e.g. admonition titles inside replies).
 		applyStaticStrings();
+		qrender();
 		var titleEl = document.getElementById("docTitle");
 		if (titleEl) document.title = titleEl.textContent + " \\u00b7 " + (T.titleSuffix || "Markdown Preview");
 	}
@@ -1666,11 +1812,37 @@ const PAGE_JS = `
 
 	var toastEl = document.getElementById("toast");
 	var toastTimer = null;
-	function toast(msg) {
+	function toast(msg, ms) {
 		toastEl.textContent = msg;
 		toastEl.classList.add("show");
 		if (toastTimer) clearTimeout(toastTimer);
-		toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 1800);
+		toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, typeof ms === "number" && ms > 0 ? ms : 1800);
+	}
+
+	// One polite live region for state changes that have no visible counterpart. Clearing
+	// first makes a repeated message announce again.
+	var srLive = document.getElementById("srLive");
+	function announce(msg) {
+		if (!srLive || !msg) return;
+		srLive.textContent = "";
+		setTimeout(function () { srLive.textContent = msg; }, 30);
+	}
+
+	/* Revision-complete chip: its own element (the export drops it) so a batch result
+	   never collides with the transient queue toasts. */
+	var revToastEl = document.getElementById("revToast");
+	var revToastTimer = null;
+	var REV_TOAST_MS = 3500;
+	function showRevToast(msg) {
+		if (!revToastEl || !msg) return;
+		revToastEl.hidden = false;
+		revToastEl.textContent = msg;
+		revToastEl.classList.add("show");
+		if (revToastTimer) clearTimeout(revToastTimer);
+		revToastTimer = setTimeout(function () {
+			revToastEl.classList.remove("show");
+			revToastTimer = setTimeout(function () { revToastEl.hidden = true; revToastEl.textContent = ""; }, 260);
+		}, REV_TOAST_MS);
 	}
 
 	/* ---------- table of contents ---------- */
@@ -2066,7 +2238,20 @@ const PAGE_JS = `
 		buildToc(d.toc || []);
 		enhanceCode(content);
 		renderMermaidBlocks(content);
+		// A finished batch may ride along with the update: adopt it silently and let the
+		// replay below relight the freshly rendered blocks. The toast belongs to the
+		// revision-done listener so a replayed frame never double-announces. A payload
+		// older than what is already on screen is ignored, never re-applied.
+		if (d.revision && typeof d.revision === "object") {
+			var rvBatch = String(d.revision.batchId == null ? "" : d.revision.batchId);
+			var rvAt = Number(d.revision.at) || 0;
+			var sameBatch = !!REVSTATE && String(REVSTATE.batchId) === rvBatch;
+			if (!sameBatch && rvAt >= (REVSTATE ? REVSTATE.at : 0)) {
+				applyRevision(d.revision.batchId, d.revision.highlights, d.revision.at);
+			}
+		}
 		restoreQaHighlights();
+		flashRevision();
 		onScroll();
 		if (!quiet) toast(T.docUpdatedToast);
 	}
@@ -2093,6 +2278,19 @@ const PAGE_JS = `
 		es.addEventListener("update", function (e) {
 			try { applyUpdate(JSON.parse(e.data)); } catch (err) { /* ignore malformed frames */ }
 		});
+		es.addEventListener("revision-done", function (e) {
+			var d = null;
+			try { d = JSON.parse(e.data); } catch (err) { return; }
+			if (!d || typeof d !== "object") return;
+			// Only this document's batch matters; a batchId+at pair is processed once (a
+			// reconnect replays the frame).
+			if (d.docId && DOC.docId && String(d.docId) !== String(DOC.docId)) return;
+			var sig = String(d.batchId == null ? "" : d.batchId) + "@" + String(Number(d.at) || 0);
+			if (sig === REVLASTSIG) return;
+			REVLASTSIG = sig;
+			applyRevision(d.batchId, d.highlights, d.at);
+			showRevToast(T.reviseDone);
+		});
 		es.addEventListener("init", function (e) {
 			try {
 				var d = JSON.parse(e.data);
@@ -2109,6 +2307,9 @@ const PAGE_JS = `
 				var qa = JSON.parse(e.data);
 				// Chat entries (quote === "") go to the bottom conversation area; the qa rail path below is untouched.
 				if (qa.chat) { addChat(qa); return; }
+				// Echo of a batch item while this tab's POST is still in flight: render the
+				// "sending" label until the POST settles.
+				if (QBUSY.ask && !qaState[qa.id]) qa.pending = "send";
 				// A question submitted by this tab is highlighted precisely with the still-live selection Range (supports spanning elements).
 				if (pendingSubmit && qa.quote === pendingSubmit.quote && qa.question === pendingSubmit.question) {
 					addQa(qa, pendingSubmit.range);
@@ -2129,9 +2330,16 @@ const PAGE_JS = `
 					return;
 				}
 				var entry = qaState[d.id];
-				if (!entry) return;
+				if (!entry) {
+					// The batch POST response may still be in flight: create the card now and let
+					// addQa patch the quote/question when that response lands.
+					addQa({ id: d.id, quote: "", question: "", answerHtml: d.answerHtml, askedAt: Date.now(), answeredAt: d.answeredAt || null, pending: false });
+					toast(T.qaAnsweredToast);
+					return;
+				}
 				entry.answerHtml = d.answerHtml;
 				entry.answeredAt = d.answeredAt;
+				entry.pending = false;
 				refreshCard(d.id);
 				toast(T.qaAnsweredToast);
 			} catch (err) { /* ignore malformed frames */ }
@@ -2144,9 +2352,15 @@ const PAGE_JS = `
 		});
 	}
 
-	/* ---------- ask about the selection (Q&A with the agent) ---------- */
+	/* ---------- ask / revise about the selection (Q&A with the agent) ---------- */
 
 	var askUrl = DOC.askUrl || "";
+	var askBatchUrl = DOC.askBatchUrl || "";
+	var reviseUrl = DOC.reviseUrl || "";
+	// canAsk: the single-question endpoint or its batch variant exists.
+	// canRev: revise is batch-only, so it needs reviseUrl.
+	var canAsk = !!(askUrl || askBatchUrl);
+	var canRev = !!reviseUrl;
 	var layoutEl = document.getElementById("layout");
 	var contentEl = document.getElementById("content");
 	var qaRail = document.getElementById("qaRail");
@@ -2189,7 +2403,8 @@ const PAGE_JS = `
 	}
 
 	// Restore cases (reload / re-render / other tabs): locate the quote in the body and wrap it.
-	// Only quotes inside a single text node are highlighted on restore (the card still shows).
+	// A quote inside one text node is wrapped directly; anything that spans inline markup
+	// falls through to the cross-node locator below.
 	function highlightByText(id, quote) {
 		if (!quote) return false;
 		if (contentEl.querySelector('mark[data-qa="' + id + '"]')) return true;
@@ -2205,7 +2420,7 @@ const PAGE_JS = `
 			},
 		});
 		var n = walker.nextNode();
-		if (!n) return false;
+		if (!n) return highlightByLocator(id, quote);
 		var idx = n.nodeValue.indexOf(quote);
 		var mark = document.createElement("mark");
 		mark.className = "mdp-qa-hl";
@@ -2218,15 +2433,208 @@ const PAGE_JS = `
 		return true;
 	}
 
+	/* Cross-node quote locator. highlightByText only searches inside one text node, so a
+	   quote that straddles <em>/<strong>/<code>/a link never restored. This index
+	   concatenates the article's text nodes, collapses whitespace runs while keeping a
+	   map back to the raw offsets, and rebuilds a real Range for the quote. */
+	var LOC_SKIP = "script,style,noscript,template";
+	var LOC_BLOCK = "p,li,td,th,blockquote,h1,h2,h3,h4,h5,h6,pre,dt,dd,figcaption,table,caption,summary";
+	var LOC_MIN = 8;
+	var LOC_MAX_RAW = 2000000;
+
+	function locIndex(rootNode) {
+		var idx = { nodes: [], starts: [], raw: "", norm: null };
+		if (!rootNode) return idx;
+		var walker = document.createTreeWalker(rootNode, NodeFilter.SHOW_TEXT, null, false);
+		var off = 0, node;
+		while ((node = walker.nextNode())) {
+			if (!node.nodeValue) continue;
+			var p = node.parentNode;
+			if (p && p.closest && p.closest(LOC_SKIP)) continue;
+			idx.nodes.push(node);
+			idx.starts.push(off);
+			idx.raw += node.nodeValue;
+			off += node.nodeValue.length;
+		}
+		return idx;
+	}
+
+	function locWs(ch) {
+		return ch === " " || ch === "\\t" || ch === "\\n" || ch === "\\r" || ch === "\\f" || ch.charCodeAt(0) === 160;
+	}
+
+	// Collapse whitespace runs to one space, trim, and keep map[i] = raw offset of text[i].
+	function locNormalize(raw) {
+		var text = "", map = [], prevSpace = true;
+		for (var i = 0; i < raw.length; i++) {
+			var ch = raw.charAt(i);
+			if (locWs(ch)) {
+				if (prevSpace) continue;
+				text += " ";
+				map.push(i);
+				prevSpace = true;
+				continue;
+			}
+			text += ch;
+			map.push(i);
+			prevSpace = false;
+		}
+		while (text.length && text.charAt(text.length - 1) === " ") { text = text.slice(0, -1); map.pop(); }
+		return { text: text, map: map };
+	}
+
+	function locText(idx) {
+		if (!idx.norm) idx.norm = locNormalize(idx.raw);
+		return idx.norm;
+	}
+
+	function locNeedle(quote) {
+		return locNormalize(String(quote || "")).text;
+	}
+
+	// Binary search: the text node holding raw offset "at".
+	function locNodeAt(idx, at) {
+		var lo = 0, hi = idx.starts.length - 1, best = 0;
+		while (lo <= hi) {
+			var mid = (lo + hi) >> 1;
+			if (idx.starts[mid] <= at) { best = mid; lo = mid + 1; } else { hi = mid - 1; }
+		}
+		var node = idx.nodes[best];
+		var offset = at - idx.starts[best];
+		if (offset < 0) offset = 0;
+		if (offset > node.nodeValue.length) offset = node.nodeValue.length;
+		return { node: node, offset: offset };
+	}
+
+	function locRange(idx, quote) {
+		if (!contentEl || !idx.nodes.length) return null;
+		var norm = locText(idx);
+		if (!norm.text) return null;
+		var needle = locNeedle(quote);
+		if (needle.length < LOC_MIN) return null;
+		var at = norm.text.indexOf(needle), hit = at >= 0 ? needle : "";
+		if (at < 0) {
+			// The rendered text may differ at the edges (partial selection, later edits):
+			// retry with shorter prefixes, then with the longest single line of the quote.
+			var pres = [80, 48, 24];
+			for (var i = 0; i < pres.length && at < 0; i++) {
+				if (needle.length <= pres[i]) continue;
+				var prefix = needle.slice(0, pres[i]);
+				var hitAt = norm.text.indexOf(prefix);
+				if (hitAt >= 0) { at = hitAt; hit = prefix; }
+			}
+		}
+		if (at < 0) {
+			var lines = String(quote || "").split("\\n"), cands = [];
+			for (var li = 0; li < lines.length; li++) {
+				var line = locNeedle(lines[li]);
+				if (line.length >= 24) cands.push(line);
+			}
+			cands.sort(function (a, b) { return b.length - a.length; });
+			for (var c = 0; c < cands.length && at < 0; c++) {
+				var lineAt = norm.text.indexOf(cands[c]);
+				if (lineAt >= 0) { at = lineAt; hit = cands[c]; }
+			}
+		}
+		if (at < 0 || !hit) return null;
+		var endNorm = at + hit.length;
+		if (endNorm > norm.text.length) endNorm = norm.text.length;
+		var startRaw = norm.map[at];
+		var lastRaw = norm.map[endNorm - 1];
+		if (startRaw == null || lastRaw == null) return null;
+		var a = locNodeAt(idx, startRaw);
+		var b = locNodeAt(idx, lastRaw + 1);
+		if (!a.node || !b.node) return null;
+		var range = null;
+		try {
+			range = document.createRange();
+			range.setStart(a.node, a.offset);
+			range.setEnd(b.node, b.offset);
+		} catch (err) { return null; }
+		if (range.collapsed) return null;
+		if (!contentEl.contains(range.commonAncestorContainer)) return null;
+		return range;
+	}
+
+	function locBlock(node) {
+		if (!node) return null;
+		var el = node.nodeType === 3 ? node.parentNode : node;
+		if (!el || !el.closest) return null;
+		var block = el.closest(LOC_BLOCK);
+		if (block && contentEl.contains(block)) return block;
+		var cur = el;
+		while (cur && cur.parentNode && cur.parentNode !== contentEl) cur = cur.parentNode;
+		return cur && cur !== contentEl && contentEl.contains(cur) ? cur : null;
+	}
+
+	// A single rewritten sentence breaks the whole-quote match and every long prefix of it:
+	// fall back to the clauses that are still verbatim, longest first, which still point
+	// at the paragraph the agent edited.
+	function locClauses(quote) {
+		var parts = String(quote || "").split(/[，,。.；;！!？?、：:\\n]/);
+		var out = [];
+		for (var i = 0; i < parts.length; i++) {
+			var needle = locNeedle(parts[i]);
+			if (needle.length >= LOC_MIN) out.push(needle);
+		}
+		out.sort(function (a, b) { return b.length - a.length; });
+		return out;
+	}
+
+	// Blocks (1-2) the quote covers: the revision wash marks whole paragraphs, which
+	// reads better than a thin inline highlight.
+	function locateBlocks(idx, quote) {
+		var out = [], seen = [];
+		var range = locRange(idx, quote);
+		if (range) {
+			var a = locBlock(range.startContainer);
+			var b = locBlock(range.endContainer);
+			if (a) { out.push(a); seen.push(a); }
+			if (b && b !== a) out.push(b);
+			return out;
+		}
+		var clauses = locClauses(quote);
+		// REV_MAX_BLOCKS is declared further down but hoisted: fall back instead of relying
+		// on assignment order, so the clause pass can never silently match nothing.
+		var cap = REV_MAX_BLOCKS || 40;
+		for (var c = 0; c < clauses.length && out.length < cap; c++) {
+			var hit = null;
+			try { hit = locRange(idx, clauses[c]); } catch (err) { hit = null; }
+			if (!hit) continue;
+			var block = locBlock(hit.startContainer);
+			if (!block || seen.indexOf(block) >= 0) continue;
+			seen.push(block);
+			out.push(block);
+		}
+		return out;
+	}
+
+	function highlightByLocator(id, quote) {
+		if (!contentEl || !quote || String(quote).length < LOC_MIN) return false;
+		var idx = null;
+		try { idx = locIndex(contentEl); } catch (err) { return false; }
+		if (idx.raw.length > LOC_MAX_RAW) return false;
+		var range = null;
+		try { range = locRange(idx, quote); } catch (err) { return false; }
+		if (!range) return false;
+		// Never nest a mark inside another question's mark: the card is enough there.
+		var holder = range.startContainer && range.startContainer.parentNode;
+		var other = holder && holder.closest ? holder.closest("mark.mdp-qa-hl") : null;
+		if (other && other.getAttribute("data-qa") !== id) return false;
+		return highlightRange(id, range);
+	}
+
 	function cardInnerHtml(entry) {
 		var answered = !!entry.answerHtml;
 		var time = answered && entry.answeredAt ? fmtTime(entry.answeredAt) : "";
+		// "send" = the batch POST is still in flight, true = waiting for the reply.
+		var wait = entry.pending === "send" ? T.qaWaitingSend : (entry.pending ? T.qaPending : T.qaWaiting);
 		return '<div class="qa-head"><span class="qa-badge">' + esc(T.qaBadge) + '</span><span class="qa-time">' + esc(time) + "</span></div>"
 			+ '<div class="qa-quote"><span class="qa-label">' + esc(T.qaLabelQuote) + "</span>" + esc(entry.quote) + "</div>"
 			+ '<div class="qa-q"><span class="qa-label">' + esc(T.qaLabelQuestion) + "</span>" + esc(entry.question) + "</div>"
 			+ (answered
 				? '<div class="qa-a">' + entry.answerHtml + '</div><button type="button" class="qa-more" hidden>' + esc(T.qaViewFull) + "</button>"
-				: '<div class="qa-wait"><span class="qa-pulse"></span>' + esc(T.qaWaiting) + "</div>");
+				: '<div class="qa-wait"><span class="qa-pulse"></span>' + esc(wait) + "</div>");
 	}
 
 	function buildCard(id, entry) {
@@ -2240,9 +2648,10 @@ const PAGE_JS = `
 	function refreshCard(id) {
 		var entry = qaState[id];
 		if (!entry) return;
+		if (entry.answerHtml) entry.pending = false;
 		var card = qaRail.querySelector('.qa-card[data-qa="' + id + '"]');
 		if (!card) return;
-		card.classList.remove("pending");
+		card.classList.toggle("pending", !entry.answerHtml);
 		card.innerHTML = cardInnerHtml(entry);
 		updateCardClamp(card);
 		layoutQaCards();
@@ -2343,9 +2752,32 @@ const PAGE_JS = `
 		}
 	}
 
+	// Idempotent by id: the batch POST response and the SSE echo race, whichever lands
+	// first creates the card and the loser only fills the fields it lacks.
 	function addQa(entry, range) {
-		if (!entry || !entry.id || qaState[entry.id]) return;
+		if (!entry || !entry.id) return;
+		var known = qaState[entry.id];
+		if (known) {
+			var changed = false;
+			if (entry.quote && !known.quote) {
+				known.quote = entry.quote;
+				changed = true;
+				highlightByText(entry.id, entry.quote);
+			}
+			if (entry.question && !known.question) { known.question = entry.question; changed = true; }
+			if (entry.answerHtml && !known.answerHtml) {
+				known.answerHtml = entry.answerHtml;
+				known.answeredAt = entry.answeredAt;
+				known.pending = false;
+				changed = true;
+			}
+			if (entry.pending === true && known.pending === "send") { known.pending = true; changed = true; }
+			if (changed) refreshCard(entry.id);
+			return;
+		}
 		qaState[entry.id] = entry;
+		// Pending cards need the rail as well, otherwise the first reply would appear in a
+		// rail that the layout still treats as empty.
 		layoutEl.classList.add("with-qa");
 		var ok = false;
 		if (range) ok = highlightRange(entry.id, range);
@@ -2364,86 +2796,482 @@ const PAGE_JS = `
 	}
 	window.addEventListener("resize", function () { layoutQaCards(); updateAllQaClamp(); });
 
-	/* selection interaction: floating ask button + ask panel */
+	/* ---------- stashed queues (batch ask / batch revise) ---------- */
+
+	// The queue lives entirely in this browser: localStorage keyed by document id plus a
+	// schema tag, so a reload keeps unsent items. Every mutation goes through qsave.
+	var QKIND = ["ask", "rev"];
+	// cap per kind: MUST stay equal to MAX_BATCH_ITEMS in server.ts, because sendQueue
+	// submits the whole queue as one batch and the server rejects anything larger.
+	var QCAP = 20;
+	var QTEXT_MAX = 4000;            // one quote/comment
+	var QSTORE_VER = "v1";
+	var QS = { ask: [], rev: [] };
+	var QBUSY = { ask: false, rev: false };
+	var QMEM = {};                   // last payload, used when localStorage is unavailable
+	var PANELMODE = "ask";
+
+	// Revision flash timing. The server timestamp is the anchor, so a frame that arrives
+	// late (or is replayed after an update) still fades out on the same schedule.
+	var REV_HOLD = 2200;             // full-strength hold before the fade starts
+	var REV_WINDOW = 3000;           // whole flash lifetime
+	var REV_MAX_Q = 20;              // max quotes replayed per batch
+	var REV_MAX_BLOCKS = 40;         // max blocks washed per batch
+	var REV_RELOAD_MS = 60000;       // reload: replay only a batch this fresh
+	var REV_TOAST_RELOAD_MS = 5000;  // ... and announce it only when it is very fresh
+	var REVSTATE = null;
+	var REVLASTSIG = "";
+	var REVTIMERS = [];
+
+	var queueGroup = document.getElementById("queueGroup");
+	var askQueueBtn = document.getElementById("askQueueBtn");
+	var revQueueBtn = document.getElementById("revQueueBtn");
+	var askQueueBadge = document.getElementById("askQueueBadge");
+	var revQueueBadge = document.getElementById("revQueueBadge");
+	var askQueueLabel = document.getElementById("askQueueLabel");
+	var revQueueLabel = document.getElementById("revQueueLabel");
+
+	function qstoreKey(kind) {
+		return "mdp." + (kind === "ask" ? "qaQueue" : "revQueue") + "." + QSTORE_VER + "." + (DOC.docId || "doc");
+	}
+
+	// Accept only well-formed items: a corrupted entry must not throw on every boot.
+	function qstrip(list) {
+		var out = [];
+		if (!list || !list.length) return out;
+		for (var i = 0; i < list.length && out.length < QCAP; i++) {
+			var it = list[i];
+			if (!it || typeof it !== "object") continue;
+			var id = String(it.id || "");
+			if (!id) continue;
+			var quote = String(it.quote == null ? "" : it.quote).slice(0, QTEXT_MAX);
+			var text = String(it.text == null ? "" : it.text).slice(0, QTEXT_MAX);
+			// An empty quote or comment is not a queue item: drop it rather than send it.
+			if (!quote.trim() || !text.trim()) continue;
+			out.push({
+				id: id,
+				quote: quote,
+				text: text,
+				at: Number(it.at) || 0,
+			});
+		}
+		return out;
+	}
+
+	function qload(kind) {
+		var raw = null;
+		try { raw = window.localStorage.getItem(qstoreKey(kind)); } catch (e) { raw = null; }
+		if (raw == null) raw = QMEM[kind] || null;
+		if (!raw) return [];
+		var parsed = null;
+		try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
+		return qstrip(parsed && parsed.items);
+	}
+
+	// Persisting is best-effort: a quota error or private mode degrades to the in-memory copy
+	// instead of losing the interaction.
+	function qsave(kind) {
+		QS[kind] = qstrip(QS[kind]);
+		var payload = JSON.stringify({ v: 1, docId: DOC.docId || "", items: QS[kind] });
+		QMEM[kind] = payload;
+		try { window.localStorage.setItem(qstoreKey(kind), payload); } catch (e) { /* memory only */ }
+	}
+
+	function qnewId() {
+		return "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+	}
+
+	function qcount(kind) {
+		return QS[kind] ? QS[kind].length : 0;
+	}
+
+	function qpush(kind, quote, text) {
+		if (!QS[kind]) return false;
+		if (qcount(kind) >= QCAP) { toast(T.queueFull); return false; }
+		QS[kind].push({
+			id: qnewId(),
+			quote: String(quote || "").slice(0, QTEXT_MAX),
+			text: String(text || "").slice(0, QTEXT_MAX),
+			at: Date.now(),
+		});
+		qsave(kind);
+		qrender();
+		return true;
+	}
+
+	// The server re-ids every item it accepts, so a sent batch cannot be dropped by the
+	// ids it returns. Drop the local entries that were actually sent instead: a qsave in
+	// the meantime re-materializes the stored objects, so match on the local id, never on
+	// object identity.
+	function qdropItems(kind, items) {
+		if (!QS[kind] || !items || !items.length) return;
+		var ids = [];
+		for (var i = 0; i < items.length; i++) {
+			var it = items[i];
+			if (!it) continue;
+			var id = typeof it === "string" ? it : String(it.id || "");
+			if (id) ids.push(id);
+		}
+		if (!ids.length) return;
+		var rest = [];
+		for (var j = 0; j < QS[kind].length; j++) {
+			if (ids.indexOf(QS[kind][j].id) < 0) rest.push(QS[kind][j]);
+		}
+		QS[kind] = rest;
+		qsave(kind);
+		qrender();
+	}
+
+	function qloadAndRender(kind) {
+		QS[kind] = qload(kind);
+		qrender();
+	}
+
+	// One renderer for both buttons: count badge, disabled/busy state, aria-label and label.
+	function qrender() {
+		for (var i = 0; i < QKIND.length; i++) {
+			var kind = QKIND[i];
+			var btn = kind === "ask" ? askQueueBtn : revQueueBtn;
+			var badge = kind === "ask" ? askQueueBadge : revQueueBadge;
+			var label = kind === "ask" ? askQueueLabel : revQueueLabel;
+			var n = qcount(kind);
+			var busy = !!QBUSY[kind];
+			if (btn) {
+				btn.disabled = busy || n === 0;
+				if (busy) btn.setAttribute("aria-busy", "true"); else btn.removeAttribute("aria-busy");
+				btn.setAttribute("aria-label", String((kind === "ask" ? T.queueAskAria : T.queueRevAria) || "").replace("{n}", String(n)));
+			}
+			if (badge) {
+				badge.textContent = n > 99 ? "99+" : String(n);
+				badge.hidden = n === 0;
+			}
+			if (label) label.textContent = busy ? T.queueSending : (kind === "ask" ? T.queueAskBtn : T.queueRevBtn);
+		}
+	}
+
+	function addQaPending(item) {
+		if (!item || !item.id) return;
+		addQa({
+			id: item.id,
+			quote: item.quote || "",
+			question: item.question || "",
+			answerHtml: item.answerHtml || null,
+			askedAt: item.askedAt || Date.now(),
+			answeredAt: item.answeredAt || null,
+			pending: !item.answerHtml,
+		});
+	}
+
+	// A card created from the SSE echo shows "sending" until the POST settles.
+	function settlePending() {
+		for (var id in qaState) {
+			if (!Object.prototype.hasOwnProperty.call(qaState, id)) continue;
+			if (qaState[id].pending === "send") { qaState[id].pending = true; refreshCard(id); }
+		}
+	}
+
+	function sendQueue(kind) {
+		if (QBUSY[kind] || !qcount(kind)) return;
+		var url = kind === "ask" ? askBatchUrl : reviseUrl;
+		if (!url) return;
+		var source = QS[kind];
+		var items = [];
+		for (var i = 0; i < source.length; i++) {
+			items.push(kind === "ask"
+				? { quote: source[i].quote, question: source[i].text }
+				: { quote: source[i].quote, comment: source[i].text });
+		}
+		QBUSY[kind] = true;
+		qrender();
+		announce(T.queueSending);
+		fetch(url, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ items: items }),
+		}).then(function (res) {
+			if (markAuthFromResponse(res)) throw new Error("auth");
+			if (!res.ok) throw new Error("http " + res.status);
+			return res.json();
+		}).then(function (data) {
+			// HTTP 200 with ok:false is a rejected batch, not a success: keep the queue.
+			if (!data || data.ok === false) throw new Error("rejected");
+			var accepted = data.items && data.items.length ? data.items : null;
+			if (accepted) {
+				for (var j = 0; j < accepted.length; j++) {
+					if (kind === "ask") addQaPending(accepted[j]);
+				}
+			}
+			// The batch is created in submission order, so a shorter response means the tail
+			// was rejected: only the matching prefix of the sent snapshot leaves the queue.
+			// A response without items counts as "all accepted" (revise rejects as a whole).
+			var take = accepted ? Math.min(accepted.length, source.length) : source.length;
+			qdropItems(kind, source.slice(0, take));
+			var tpl = kind === "ask" ? T.queueAskSent : T.queueRevSent;
+			toast(String(tpl || "").replace("{n}", String(take)));
+		}).catch(function () {
+			// A failure keeps the queue intact so nothing typed is lost.
+			toast(authFailed ? tx("authFailToast") : T.queueSendFail);
+		}).then(function () {
+			QBUSY[kind] = false;
+			qrender();
+			if (kind === "ask") settlePending();
+		});
+	}
+
+	/* revision-complete wash: locate the quoted blocks and fade them out */
+
+	function clearFlash() {
+		for (var i = 0; i < REVTIMERS.length; i++) clearTimeout(REVTIMERS[i]);
+		REVTIMERS = [];
+		if (!contentEl) return;
+		var marks = contentEl.querySelectorAll(".rev-flash, .rev-fade");
+		for (var j = 0; j < marks.length; j++) marks[j].classList.remove("rev-flash", "rev-fade");
+	}
+
+	function revFresh() {
+		return !!(REVSTATE && REVSTATE.items && REVSTATE.items.length && (Date.now() - REVSTATE.at) < REV_WINDOW);
+	}
+
+	function flashRevision() {
+		if (!revFresh() || !contentEl) return;
+		clearFlash();
+		var elapsed = Math.max(0, Date.now() - REVSTATE.at);
+		var hold = Math.max(0, REV_HOLD - elapsed);
+		var total = Math.max(0, REV_WINDOW - elapsed);
+		if (total <= 0) return;
+		var blocks = [], seen = [];
+		try {
+			var idx = locIndex(contentEl);
+			if (idx.raw.length <= LOC_MAX_RAW) {
+				for (var i = 0; i < REVSTATE.items.length && i < REV_MAX_Q && blocks.length < REV_MAX_BLOCKS; i++) {
+					var found = [];
+					try { found = locateBlocks(idx, REVSTATE.items[i]); } catch (e1) { found = []; }
+					for (var j = 0; j < found.length && blocks.length < REV_MAX_BLOCKS; j++) {
+						if (found[j] && seen.indexOf(found[j]) < 0) {
+							seen.push(found[j]);
+							blocks.push(found[j]);
+						}
+					}
+				}
+			}
+		} catch (e) { blocks = []; }
+		// No node reference is cached: applyUpdate replaces the article wholesale, so every
+		// replay locates its blocks again.
+		for (var k = 0; k < blocks.length; k++) {
+			(function (node) {
+				node.classList.add("rev-flash");
+				if (hold > 0) REVTIMERS.push(setTimeout(function () { node.classList.add("rev-fade"); }, hold));
+				REVTIMERS.push(setTimeout(function () {
+					node.classList.remove("rev-flash");
+					node.classList.remove("rev-fade");
+				}, total));
+			})(blocks[k]);
+		}
+	}
+
+	function applyRevision(batchId, quotes, at) {
+		var now = Date.now();
+		var stamp = Number(at) || now;
+		// Clock skew or an old frame still lands on a sane schedule.
+		if (!isFinite(stamp) || stamp > now + 5000) stamp = now;
+		var items = [];
+		if (quotes && quotes.length) {
+			for (var i = 0; i < quotes.length && items.length < REV_MAX_Q; i++) {
+				if (typeof quotes[i] === "string" && quotes[i]) items.push(quotes[i]);
+			}
+		}
+		REVSTATE = { batchId: batchId == null ? "" : String(batchId), items: items, at: stamp };
+		flashRevision();
+	}
+
+	/* selection interaction: floating ask/revise bar + one shared panel */
+
+	var selBar = document.getElementById("qaSelBar");
 	var selBtn = document.getElementById("qaSelBtn");
+	var revSelBtn = document.getElementById("revSelBtn");
 	var askPanel = document.getElementById("askPanel");
+	var panelTitle = document.getElementById("qaPanelTitle");
 	var panelQuote = document.getElementById("qaPanelQuote");
 	var panelInput = document.getElementById("qaPanelInput");
+	var panelStash = document.getElementById("qaPanelStash");
 	var selTimer = null;
 	var pendingRange = null;
 	var pendingQuote = "";
 
-	function updateSelBtn() {
-		if (!askUrl || (askPanel && !askPanel.hidden)) return;
+	// The bar carries the position so both actions share one anchor; the buttons cancel
+	// their mousedown so the selection survives the click.
+	function updateSelBar() {
+		if (!selBar) return;
+		if (!canAsk && !canRev) { selBar.hidden = true; return; }
+		if (askPanel && !askPanel.hidden) return;
 		var sel = window.getSelection();
-		if (!sel || sel.isCollapsed || !sel.rangeCount) { selBtn.hidden = true; return; }
+		if (!sel || sel.isCollapsed || !sel.rangeCount) { selBar.hidden = true; return; }
 		var range = sel.getRangeAt(0);
-		if (!contentEl.contains(range.commonAncestorContainer)) { selBtn.hidden = true; return; }
+		if (!range || !range.commonAncestorContainer || !contentEl.contains(range.commonAncestorContainer)) { selBar.hidden = true; return; }
 		var text = sel.toString();
-		if (!text || !text.trim()) { selBtn.hidden = true; return; }
+		if (!text || !text.trim()) { selBar.hidden = true; return; }
 		pendingRange = range.cloneRange();
 		pendingQuote = text;
 		var rect = range.getBoundingClientRect();
-		selBtn.style.top = (rect.bottom + window.scrollY + 8) + "px";
-		selBtn.style.left = Math.max(8, rect.left + window.scrollX) + "px";
-		selBtn.hidden = false;
+		selBar.style.top = (rect.bottom + window.scrollY + 8) + "px";
+		selBar.style.left = Math.max(8, rect.left + window.scrollX) + "px";
+		selBar.hidden = false;
 	}
 
-	if (askUrl) {
-		document.addEventListener("selectionchange", function () {
-			clearTimeout(selTimer);
-			selTimer = setTimeout(updateSelBtn, 160);
-		});
-		selBtn.addEventListener("mousedown", function (e) { e.preventDefault(); });
-		selBtn.addEventListener("click", function () {
-			selBtn.hidden = true;
-			panelQuote.textContent = pendingQuote.length > 120 ? pendingQuote.slice(0, 120) + "…" : pendingQuote;
-			panelInput.value = "";
-			askPanel.style.top = selBtn.style.top;
-			askPanel.style.left = selBtn.style.left;
-			askPanel.hidden = false;
-			panelInput.focus();
-		});
-		document.getElementById("qaPanelCancel").addEventListener("click", function () {
-			askPanel.hidden = true;
-		});
-		panelInput.addEventListener("keydown", function (e) {
-			if (e.key === "Enter" && !e.shiftKey) {
-				e.preventDefault();
-				submitAsk();
-			}
-		});
-		document.getElementById("qaPanelSend").addEventListener("click", submitAsk);
+	function setPanelMode(mode) {
+		PANELMODE = mode === "rev" ? "rev" : "ask";
+		if (askPanel) askPanel.setAttribute("data-mode", PANELMODE);
+		if (panelTitle) {
+			panelTitle.setAttribute("data-i18n", PANELMODE === "rev" ? "panelTitleRev" : "panelTitleAsk");
+			panelTitle.textContent = PANELMODE === "rev" ? T.panelTitleRev : T.panelTitleAsk;
+		}
+		if (panelInput) {
+			panelInput.setAttribute("data-i18n-placeholder", PANELMODE === "rev" ? "panelRevPlaceholder" : "qaPanelPlaceholder");
+			panelInput.placeholder = PANELMODE === "rev" ? T.panelRevPlaceholder : T.qaPanelPlaceholder;
+		}
+		// Stash needs a batch endpoint; revise has no single-item fallback.
+		if (panelStash) panelStash.hidden = PANELMODE === "rev" ? !reviseUrl : !askBatchUrl;
+	}
 
-		function submitAsk() {
-			var q = panelInput.value.trim();
-			if (!q || !pendingQuote) return;
-			// Match the server-side trim so the SSE echo can be matched to pendingSubmit.
-			var quote = pendingQuote.trim();
-			var range = pendingRange;
-			pendingSubmit = { quote: quote, question: q, range: range };
-			panelInput.disabled = true;
-			fetch(askUrl, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ quote: quote, question: q }),
-			}).then(function (res) {
-				if (markAuthFromResponse(res)) throw new Error("auth");
-				if (!res.ok) throw new Error("http " + res.status);
-				return res.json();
-			}).then(function (data) {
-				askPanel.hidden = true;
-				pendingSubmit = null;
-				if (!qaState[data.id]) addQa({ id: data.id, quote: quote, question: q, answerHtml: null, askedAt: data.askedAt || Date.now(), answeredAt: null }, range);
-				toast(T.qaAskToast);
-			}).catch(function () {
-				pendingSubmit = null;
-				toast(authFailed ? tx("authFailToast") : T.qaAskFailToast);
-			}).then(function () {
-				panelInput.disabled = false;
-			});
+	function closePanel(refocus) {
+		if (!askPanel) return;
+		askPanel.hidden = true;
+		pendingRange = null;
+		if (selBar) selBar.hidden = true;
+		// Closing ends the interaction: drop the selection so the toolbar does not pop
+		// back up on the next selectionchange tick.
+		try {
+			var liveSel = window.getSelection();
+			if (liveSel) liveSel.removeAllRanges();
+		} catch (e) { /* selection API unavailable */ }
+		if (refocus && contentEl) {
+			try { contentEl.focus({ preventScroll: true }); } catch (e) { /* focus is best-effort */ }
 		}
 	}
+
+	function openPanel(mode) {
+		if (!askPanel || !panelInput) return;
+		setPanelMode(mode);
+		if (selBar) selBar.hidden = true;
+		panelQuote.textContent = pendingQuote.length > 120 ? pendingQuote.slice(0, 120) + "\u2026" : pendingQuote;
+		panelInput.value = "";
+		// Narrow screens use the CSS bottom drawer; an inline top/left would win over it.
+		if (window.innerWidth && window.innerWidth <= 720) {
+			askPanel.style.top = "";
+			askPanel.style.left = "";
+		} else if (selBar) {
+			askPanel.style.top = selBar.style.top;
+			askPanel.style.left = selBar.style.left;
+		}
+		askPanel.hidden = false;
+		panelInput.focus();
+	}
+
+	// Stash the draft into the queue of the current mode (quiet = a send follows).
+	function stashPanel(quiet) {
+		if (!panelInput) return false;
+		var text = String(panelInput.value || "").trim();
+		var quote = String(pendingQuote || "").trim();
+		if (!text || !quote) { toast(T.panelEmpty); return false; }
+		if (!qpush(PANELMODE, quote, text)) return false;
+		if (!quiet) toast(PANELMODE === "rev" ? T.stashOkRev : T.stashOkAsk);
+		panelInput.value = "";
+		return true;
+	}
+
+	// "Send" always means stash-then-flush, so a half-typed draft is never lost.
+	function submitPanel() {
+		if (PANELMODE === "rev") {
+			if (!reviseUrl) return;
+			if (!stashPanel(true)) return;
+			closePanel(true);
+			sendQueue("rev");
+			return;
+		}
+		if (!askBatchUrl) {
+			// Server without the batch endpoint: keep the old one-shot behaviour.
+			if (askUrl) submitAsk();
+			return;
+		}
+		if (!stashPanel(true)) return;
+		closePanel(true);
+		sendQueue("ask");
+	}
+
+	function submitAsk() {
+		var q = panelInput.value.trim();
+		if (!q || !pendingQuote) return;
+		// Match the server-side trim so the SSE echo can be matched to pendingSubmit.
+		var quote = pendingQuote.trim();
+		var range = pendingRange;
+		pendingSubmit = { quote: quote, question: q, range: range };
+		panelInput.disabled = true;
+		fetch(askUrl, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ quote: quote, question: q }),
+		}).then(function (res) {
+			if (markAuthFromResponse(res)) throw new Error("auth");
+			if (!res.ok) throw new Error("http " + res.status);
+			return res.json();
+		}).then(function (data) {
+			askPanel.hidden = true;
+			pendingSubmit = null;
+			if (!qaState[data.id]) addQa({ id: data.id, quote: quote, question: q, answerHtml: null, askedAt: data.askedAt || Date.now(), answeredAt: null, pending: true }, range);
+			toast(T.qaAskToast);
+		}).catch(function () {
+			pendingSubmit = null;
+			toast(authFailed ? tx("authFailToast") : T.qaAskFailToast);
+		}).then(function () {
+			panelInput.disabled = false;
+		});
+	}
+
+	if (canAsk || canRev) {
+		if (selBtn) selBtn.hidden = !canAsk;
+		if (revSelBtn) revSelBtn.hidden = !canRev;
+		if (queueGroup) queueGroup.hidden = false;
+		if (askQueueBtn) askQueueBtn.hidden = !askBatchUrl;
+		if (revQueueBtn) revQueueBtn.hidden = !reviseUrl;
+		// The queue buttons flush their own stash; sendQueue's QBUSY guard is the only lock.
+		if (askQueueBtn) askQueueBtn.addEventListener("click", function () { sendQueue("ask"); });
+		if (revQueueBtn) revQueueBtn.addEventListener("click", function () { sendQueue("rev"); });
+		document.addEventListener("selectionchange", function () {
+			clearTimeout(selTimer);
+			selTimer = setTimeout(updateSelBar, 160);
+		});
+		var barBtns = [selBtn, revSelBtn];
+		for (var bb = 0; bb < barBtns.length; bb++) {
+			if (!barBtns[bb]) continue;
+			barBtns[bb].addEventListener("mousedown", function (e) { e.preventDefault(); });
+		}
+		if (selBtn) selBtn.addEventListener("click", function () { openPanel("ask"); });
+		if (revSelBtn) revSelBtn.addEventListener("click", function () { openPanel("rev"); });
+		var cancelBtn = document.getElementById("qaPanelCancel");
+		if (cancelBtn) cancelBtn.addEventListener("click", function () { closePanel(true); });
+		var sendBtn = document.getElementById("qaPanelSend");
+		if (sendBtn) sendBtn.addEventListener("click", submitPanel);
+		if (panelStash) panelStash.addEventListener("click", function () { if (stashPanel(false)) closePanel(true); });
+		if (panelInput) panelInput.addEventListener("keydown", function (e) {
+			if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitPanel(); }
+		});
+		document.addEventListener("keydown", function (e) {
+			if (e.key === "Escape" && askPanel && !askPanel.hidden) closePanel(true);
+		});
+	} else {
+		// No endpoint at all: keep every affordance out of the way.
+		if (selBar) selBar.hidden = true;
+		if (queueGroup) queueGroup.hidden = true;
+	}
+
+	// Another tab wrote this document's queue: adopt it unless this tab is mid-send.
+	window.addEventListener("storage", function (e) {
+		if (!e || !e.key) return;
+		var kind = e.key.indexOf("mdp.qaQueue.") === 0 ? "ask" : (e.key.indexOf("mdp.revQueue.") === 0 ? "rev" : "");
+		if (!kind || QBUSY[kind]) return;
+		if (e.key !== qstoreKey(kind)) return;
+		qloadAndRender(kind);
+	});
 
 	/* ---------- document chat (bottom conversation with the agent) ---------- */
 
@@ -2730,7 +3558,7 @@ const PAGE_JS = `
 		/* 2) Strip scripts and online interactions (entries that would surely fail or be wrong offline) */
 		var scripts = clone.querySelectorAll("script");
 		for (var i = 0; i < scripts.length; i++) scripts[i].parentNode.removeChild(scripts[i]);
-		removeInClone(clone, ["exportBtn", "downloadBtn", "qaSelBtn", "askPanel", "langSeg", "qaModal"]);
+		removeInClone(clone, ["exportBtn", "downloadBtn", "qaSelBtn", "revSelBtn", "qaSelBar", "askPanel", "langSeg", "qaModal", "queueGroup", "revToast"]);
 		removeInClone(clone, ["chatInput"]);
 		var prog = clone.querySelector(".progress");
 		if (prog && prog.parentNode) prog.parentNode.removeChild(prog);
@@ -2835,6 +3663,15 @@ const PAGE_JS = `
 	}
 	// Hydrated answer HTML may contain content-level i18n anchors (admonition titles).
 	applyStaticStrings();
+	// Restore the stashed queues, then replay a recent revision wash: the server sent the
+	// timestamp, so a reload still fades on the original schedule.
+	qloadAndRender("ask");
+	qloadAndRender("rev");
+	var bootRev = DOC.revision;
+	if (bootRev && bootRev.at && (Date.now() - bootRev.at) <= REV_RELOAD_MS) {
+		applyRevision(bootRev.batchId, bootRev.highlights, bootRev.at);
+		if ((Date.now() - bootRev.at) <= REV_TOAST_RELOAD_MS) showRevToast(T.reviseDone);
+	}
 	onScroll();
 })();
 `;
@@ -2856,15 +3693,17 @@ function icon(name: string): string {
 		up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>',
 		download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M6.5 10.5 12 16l5.5-5.5"/><path d="M4.5 19.5h15"/></svg>',
 		export: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 3.5H6.5A1.5 1.5 0 0 0 5 5v14a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 19V9z"/><path d="M13.5 3.5V9H19"/><path d="M12 17v-6"/><path d="M9.5 13.5 12 11l2.5 2.5"/></svg>',
+		chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 15.5A2.5 2.5 0 0 1 17.5 18H9l-4 3v-4A2.5 2.5 0 0 1 3 14.5v-7A2.5 2.5 0 0 1 5.5 5h12A2.5 2.5 0 0 1 20 7.5z"/><path d="M8 10.5h8M8 13.5h5"/></svg>',
+		pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17z"/><path d="M15 6.5 18.5 10"/></svg>',
 	};
 	return icons[name] ?? "";
 }
 
 export function renderPage(options: PageOptions): string {
-	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefLineHeight, prefBg, downloadUrl, prefsUrl, askUrl, chatUrl, mermaidUrl, qa, version } = options;
+	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefLineHeight, prefBg, downloadUrl, prefsUrl, askUrl, askBatchUrl, reviseUrl, revision, chatUrl, mermaidUrl, qa, version } = options;
 	const lang = normalizeLang(options.lang);
 	const t = STRINGS[lang];
-	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, chatUrl: chatUrl ?? null, mermaidUrl: mermaidUrl ?? null, qa: qa ?? [], downloadUrl: downloadUrl ?? null, lang, i18n: STRINGS }).replace(/</g, "\\u003c");
+	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, askBatchUrl: askBatchUrl ?? null, reviseUrl: reviseUrl ?? null, revision: revision ?? null, chatUrl: chatUrl ?? null, mermaidUrl: mermaidUrl ?? null, qa: qa ?? [], downloadUrl: downloadUrl ?? null, lang, i18n: STRINGS }).replace(/</g, "\\u003c");
 	const hintAttr = themeHint ? ` data-theme-hint="${escapeHtml(themeHint)}"` : "";
 	const scaleAttr = typeof prefScale === "number" && isFinite(prefScale) ? ` data-pref-scale="${prefScale}"` : "";
 	const lineHeightAttr = typeof prefLineHeight === "number" && isFinite(prefLineHeight) ? ` data-pref-line-height="${prefLineHeight}"` : "";
@@ -2894,6 +3733,14 @@ ${THEME_BOOT}
 			</div>
 		</div>
 		<div class="controls">
+			<div class="queue-group" id="queueGroup" role="group" aria-label="${escapeHtml(t.queueGroupAria)}" data-i18n-aria="queueGroupAria" hidden>
+				<button type="button" class="qbtn" id="askQueueBtn" disabled aria-label="${escapeHtml(t.queueAskBtn)}" title="${escapeHtml(t.queueAskBtn)}" data-i18n-title="queueAskBtn">
+					<span class="qbtn-ico" aria-hidden="true">${icon("chat")}</span><span class="qbtn-label" id="askQueueLabel" data-i18n="queueAskBtn">${escapeHtml(t.queueAskBtn)}</span><span class="qbtn-badge" id="askQueueBadge" aria-hidden="true" hidden>0</span>
+				</button>
+				<button type="button" class="qbtn" id="revQueueBtn" disabled aria-label="${escapeHtml(t.queueRevBtn)}" title="${escapeHtml(t.queueRevBtn)}" data-i18n-title="queueRevBtn">
+					<span class="qbtn-ico" aria-hidden="true">${icon("pencil")}</span><span class="qbtn-label" id="revQueueLabel" data-i18n="queueRevBtn">${escapeHtml(t.queueRevBtn)}</span><span class="qbtn-badge" id="revQueueBadge" aria-hidden="true" hidden>0</span>
+				</button>
+			</div>
 			<span class="live-pill" id="livePill" title="${escapeHtml(t.liveSyncTitle)}" data-i18n-title="liveSyncTitle"><span class="live-dot"></span><span class="live-text" data-i18n="liveSyncText">${escapeHtml(t.liveSyncText)}</span></span>
 			<div class="seg" role="group" aria-label="${escapeHtml(t.groupTheme)}" data-i18n-aria="groupTheme">
 				<button type="button" data-theme-set="system" title="${escapeHtml(t.themeSystem)}" aria-label="${escapeHtml(t.themeSystem)}" data-i18n-title="themeSystem" data-i18n-aria="themeSystem">${icon("system")}</button>
@@ -2957,11 +3804,16 @@ ${bodyHtml}
 	</aside>
 </div>
 
-<button type="button" class="qa-sel-btn" id="qaSelBtn" hidden data-i18n="qaSelBtn">${escapeHtml(t.qaSelBtn)}</button>
+<div class="qa-sel-bar" id="qaSelBar" role="toolbar" hidden>
+	<button type="button" class="qa-sel-btn" id="qaSelBtn" aria-label="${escapeHtml(t.selAskAria)}" data-i18n="qaSelBtn" data-i18n-aria="selAskAria">${escapeHtml(t.qaSelBtn)}</button>
+	<button type="button" class="qa-sel-btn rev" id="revSelBtn" aria-label="${escapeHtml(t.selRevAria)}" data-i18n="selRevBtn" data-i18n-aria="selRevAria">${escapeHtml(t.selRevBtn)}</button>
+</div>
 <div class="qa-panel" id="askPanel" hidden>
+	<div class="qa-panel-title" id="qaPanelTitle" data-i18n="panelTitleAsk">${escapeHtml(t.panelTitleAsk)}</div>
 	<div class="qa-panel-quote" id="qaPanelQuote"></div>
 	<textarea id="qaPanelInput" rows="3" placeholder="${escapeHtml(t.qaPanelPlaceholder)}" data-i18n-placeholder="qaPanelPlaceholder"></textarea>
 	<div class="qa-panel-actions">
+		<button type="button" id="qaPanelStash" data-i18n="panelStash">${escapeHtml(t.panelStash)}</button>
 		<button type="button" id="qaPanelSend" class="primary" data-i18n="qaSend">${escapeHtml(t.qaSend)}</button>
 		<button type="button" id="qaPanelCancel" data-i18n="qaCancel">${escapeHtml(t.qaCancel)}</button>
 	</div>
@@ -2969,6 +3821,8 @@ ${bodyHtml}
 
 <button class="to-top" id="toTop" type="button" aria-label="${escapeHtml(t.toTop)}" title="${escapeHtml(t.toTop)}" data-i18n-title="toTop" data-i18n-aria="toTop">${icon("up")}</button>
 <div class="toast" id="toast" role="status"></div>
+<div class="rev-toast" id="revToast" role="status" aria-live="polite" hidden></div>
+<div class="sr-only" id="srLive" role="status" aria-live="polite"></div>
 
 <div class="qa-modal" id="qaModal">
 	<div class="qa-modal-card" role="dialog" aria-modal="true" aria-labelledby="qaModalTitle">

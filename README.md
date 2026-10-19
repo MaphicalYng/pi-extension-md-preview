@@ -20,7 +20,9 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 | Agent-initiated preview + auto-open browser | The `md_preview` tool starts a local server and opens the page in the system default browser (macOS `open` / Linux `xdg-open` / Windows `start`), de-duplicating across tabs (an already-open tab is reused); `/md-preview <file> --host <ip>` can pick which IP the tab opens with, and `/md-preview-host <ip>` persists that choice in the user-level config so every pi instance opens at it |
 | No babysitting | The tool returns immediately and the server runs on its own. It exits 8 s after the last tab closes (or 5 min after start if no tab ever opened), with a final safety exit when the Pi session shuts down |
 | Ask the agent about selected text | Select text in the page → floating "Ask" button → the question is injected into the Pi session to wake the agent → the answer is pushed back live via the `md_preview_reply` tool as a reply card (quote / answer / timestamp) beside the document, with the quoted text highlighted in orange |
+| Stash a batch of questions | Select a passage → "✦ Ask" → type the question → **Stash** parks it in the queue and closes the panel (the toolbar's **Ask** button shows how many are waiting); one click later sends the whole batch as a single token-gated `POST /doc/<id>/ask-batch`, and the agent's per-item `md_preview_reply` calls fill in each item's own Q&A card |
 | Chat with the agent about the document | A chat area at the bottom of the page takes a message about the whole document (no text selection needed) and injects it into the Pi session together with a summary of the recent chat turns; the agent replies with `md_preview_reply` and the answer appears as an "Agent" message in the chat feed (newest first), restored after refresh/reopen |
+| Stash a batch of revisions | Select a passage → "✎ Revise" → **Stash** the revision comment (the toolbar's **Revise** button counts the queue); one click submits it via `POST /doc/<id>/revise`, the agent edits the Markdown file directly **without posting replies**, then calls `md_preview_revision_done` (`doc?`, `highlights?`) so the page marks the rewritten passages with a color block that fades out in ~3 s |
 | Markdown as a web page | GFM renderer built on `marked`: headings, tables, fenced code (25+ languages highlighted), blockquotes (incl. `[!NOTE]` … `[!CAUTION]` admonitions), task lists, footnotes, images, autolinks |
 | Mermaid diagrams | `mermaid` fenced blocks render as diagrams; the mermaid runtime is lazy-loaded from the preview server's own origin (flowcharts, sequence diagrams, …) |
 | Bilingual UI (en / zh) | The agent always picks the page UI language explicitly via the required `ui_lang` tool parameter, chosen from the user's language; an in-page 中/EN switch lets the reader override it (remembered in `localStorage`) |
@@ -116,6 +118,7 @@ Agent writes .md ──► md_preview tool ──► local preview server (127.0
 
 - **Process lifecycle**: the server starts lazily on first use (tool or command) and never blocks the tool's return; exit decisions run in a lightweight 3-second patrol loop with no external dependencies.
 - **Ask-about-selection pipeline**: the page POSTs `/doc/{id}/ask` → the server stores the Q&A record and broadcasts an SSE `ask` → the extension injects the question into the Pi session via `pi.sendUserMessage` (`deliverAs: "followUp"`); after reading the relevant files, the agent calls `md_preview_reply` → the server renders the Markdown answer and broadcasts SSE `answer` → a reply card appears beside the document in every tab showing it, with the quoted text highlighted in orange.
+- **Batch pipelines**: a stashed queue leaves the page as one request — `POST /doc/{id}/ask-batch` or `POST /doc/{id}/revise` (token-gated like every other route) — and the extension wakes the agent once per batch (`onAsk` / `onRevise`) instead of once per item. An ask batch fans out into one Q&A record per item, each answered by its own `md_preview_reply` `question_id`, so the cards fill in one by one; a revise batch creates no Q&A record at all — the file is the deliverable, and `md_preview_revision_done` is the terminal step that pushes the new HTML and broadcasts the fading highlight marks. Only the newest batch per document is kept (an unfinished earlier one is superseded).
 - **Cross-tab de-duplication**: multiple tabs of the same file share one document render; edits refresh all tabs together.
 - **UI language**: the `md_preview` tool requires an explicit `ui_lang` (`"en"` or `"zh"`), which the agent chooses based on the user's language. The `/md-preview` command resolves it as `MD_PREVIEW_LANG` environment variable > `"en"` (when a document is first opened). An in-page 中/EN switch overrides the server-sent language and is remembered per browser origin in `localStorage` (`mdp.lang`). The language is intentionally *not* written to the user-level prefs file.
 - **Download source**: the toolbar offers one-click download of the current document's Markdown source (`GET /doc/{id}/download`, `Content-Disposition: attachment`, always read fresh from disk).
@@ -128,6 +131,8 @@ Agent writes .md ──► md_preview tool ──► local preview server (127.0
 - Top toolbar: theme switcher (system / light / dark), reading-background swatches (white / dim / wood / cyan — paper tones in light mode, matching dark variants in dark mode), font-size A- / A+, line-height stepper, language switch (中 / EN), download source, export HTML, and a page progress bar.
 - Code blocks: language label, one-click copy (with success feedback), per-language highlighting; unsupported languages degrade to plain text.
 - Ask about selection: select any body text and click the floating "Ask" button; once the agent replies, a card appears beside the document with the quote, answer and timestamp, and the quoted text is highlighted in orange.
+- Stash queue: the toolbar's **Ask** / **Revise** buttons carry a count badge for stashed items (hidden at zero, disabled while a send is in flight); one click flushes that whole queue in a single request, and a failed send keeps every entry and its badge.
+- Revision wash: when a revision batch is marked done, each matching passage gets a color block that holds for ~2 s and fades out by ~3 s; a reload inside that window replays it on the original schedule.
 - Footer version stamp: commit date + short commit id (from git; `-dirty` appended when the working tree has uncommitted changes; hidden when git is unavailable).
 - Reading details: `scroll-margin-top` keeps anchor jumps clear of the sticky toolbar; narrow screens adapt (TOC collapses, tables scroll horizontally).
 
@@ -135,11 +140,11 @@ Agent writes .md ──► md_preview tool ──► local preview server (127.0
 
 ```
 extensions/md-preview/
-├── index.ts       # extension entry: md_preview / md_preview_reply tools + /md-preview + /md-preview-host commands + shutdown safety net
+├── index.ts       # extension entry: md_preview / md_preview_reply / md_preview_revision_done tools + /md-preview + /md-preview-host commands + shutdown safety net
 ├── render.ts      # Markdown → HTML renderer (marked/GFM): TOC, anchors, admonitions, footnotes, code-block chrome
-├── page.ts        # page template: CSS theme system + interaction scripts (TOC/theme/font/line-height/code highlighting/live sync/ask/chat/export)
+├── page.ts        # page template: CSS theme system + interaction scripts (TOC/theme/font/line-height/code highlighting/live sync/ask/chat/stash queue/revision wash/export)
 ├── page-i18n.ts   # bilingual UI string table (en/zh) + language normalization
-├── server.ts      # local HTTP server: routing, SSE live sync, viewer counting, auto-exit, /prefs, /doc/{id}/ask, /doc/{id}/download
+├── server.ts      # local HTTP server: routing, SSE live sync, viewer counting, auto-exit, /prefs, /doc/{id}/ask, /doc/{id}/ask-batch, /doc/{id}/revise, /doc/{id}/download
 ├── prefs.ts       # user-level preferences (theme/bg/scale/line-height + persisted browser host): load, validate, atomic debounced persistence
 ├── vendor/        # vendored self-contained Mermaid ESM build (MIT), served lazily from the preview origin
 └── browser.ts     # cross-platform default-browser opener
@@ -220,6 +225,37 @@ While reading, select any body text and click the floating "✦ Ask" button to t
 
 The reply appears in real time as a card **beside the document** (synced across every tab showing it), containing the quote, the answer and the timestamp; the quoted text is highlighted in orange in the body. Q&A lives with the server — cards and highlights restore automatically after refresh/reopen (highlights are re-located by quote text, so a cross-element selection may lose its highlight on restore; the card itself is unaffected). Pending cards show "Waiting for the agent's reply…". On narrow screens (<1080px) the side rail is hidden and only the orange highlight remains.
 
+To ask about several passages in one go, see [Stash a batch of questions and revisions](#stash-a-batch-of-questions-and-revisions).
+
+### Stash a batch of questions and revisions
+
+Both floating buttons can defer their work instead of sending it immediately.
+
+**Questions.** Select text → "✦ Ask" → write the question → click **Stash** instead of Send. The panel closes, the draft joins the queue, and the toolbar's **Ask** button now carries a count badge. Repeat for as many passages as you like, then click **Ask** once: the page POSTs `POST /doc/<id>/ask-batch` and the extension wakes the agent a single time with every item, each tagged with its own `question_id`. **Send** inside the panel behaves the same way — it stashes the current draft first and then flushes the whole queue, so a half-typed question is never lost. The agent answers item by item:
+
+```jsonc
+// one md_preview_reply call per stashed question
+{ "question_id": "q4", "text": "… (Markdown supported)" }
+```
+
+Each reply lands in that item's own Q&A card, exactly like a single question: the cards start at "Waiting for the reply…" and fill in as the answers arrive. A failed send keeps the queue intact (the toast says so) and drops nothing.
+
+**Revisions.** Select text → "✎ Revise" → describe the change → **Stash** or **Send**; the toolbar's **Revise** button counts the queue and submits it via `POST /doc/<id>/revise`. The injected message is an explicit *document edit request*: the agent edits the Markdown file in place and does **not** answer through `md_preview_reply` or post a chat message — the rewritten document is the only deliverable, so no reply card appears.
+
+Once the file is saved, the agent closes the batch with one call:
+
+```jsonc
+// tool call — once per batch, after the edits are on disk
+{
+  "doc": "d1",                       // optional: document id or its Markdown path; omit for the most recent preview
+  "highlights": ["cache hit rate", "p95 fell to 180 ms"]  // optional: one short verbatim phrase per revised passage
+}
+```
+
+The tool re-renders the document, pushes the new HTML to every open tab, then broadcasts `revision-done`. The page shows the toast "Revision complete; the document has been updated" and marks each matching passage with a color block that holds for ~2 s and fades out by ~3 s. Highlights are plain-text needles copied from the freshly edited text (the rendered page contains no Markdown markers such as `**` or backticks, so pass plain text), up to 20 phrases of 300 characters each. The call is **idempotent**: calling it again for the same batch keeps the original timestamp, so the fade window is not extended — a repeat only refreshes which passages are marked (omitting `highlights` keeps the earlier list). A reload inside the window replays the marks on the original schedule.
+
+**Limits and older servers.** One batch carries at most 20 items: stashing a 21st entry is refused with a toast, so the queue can always be sent as-is. The page has no control to drop an individual stashed entry, and no way to clear the queue either — the batch can only go out whole. Both endpoints are injected into the page with the session token. When the server does not provide `askBatchUrl` / `reviseUrl` — an older extension — the page hides the matching queue button, hides the **Stash** button in that panel, and hides the "✎ Revise" entry entirely; **Send** in the ask panel falls back to the legacy one-shot `POST /doc/{id}/ask`, so the original single-question flow keeps working without queueing.
+
 ## Security considerations
 
 - The server binds to loopback by default. **Every route — including requests from the local machine — requires the `?token=` access token**; a missing or wrong token returns `401`. Exposing the server to other machines is opt-in (`MD_PREVIEW_BIND`), and even then access stays token-protected. The page itself makes no external network requests (no CDN, no external assets).
@@ -235,6 +271,8 @@ The reply appears in real time as a card **beside the document** (synced across 
 - Code highlighting is applied client-side in the page using built-in lexical rules (25+ common languages); unsupported languages render as plain-text code blocks; `mermaid` fences bypass highlighting and render as diagrams.
 - "Exit 8 s after the last tab closes" is a design choice, not a bug: a quick refresh or network hiccup won't kill your preview; calling the tool again revives it at any time.
 - In exported HTML snapshots, mermaid SVG colors stay at the snapshot-time theme even if you switch themes in the snapshot.
+- A batch carries at most 20 items; the 21st entry is refused when stashed, so a queue is always sendable — there is no in-page control to drop individual stashed items or to clear the queue.
+- Revision highlights are located by plain-text needle: a phrase that spans inline elements, or no longer matches the edited text, marks nothing (the tool's output names the misses).
 
 ## Development
 

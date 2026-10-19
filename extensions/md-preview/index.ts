@@ -14,7 +14,17 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { currentServer, ensureServer, envBindHost, type AskNotice, type QaEntry } from "./server";
+import {
+	currentServer,
+	ensureServer,
+	envBindHost,
+	MAX_HIGHLIGHTS,
+	MAX_HIGHLIGHT_LEN,
+	type AskBatchNotice,
+	type AskNotice,
+	type QaEntry,
+	type RevisionNotice,
+} from "./server";
 import { openBrowser } from "./browser";
 import { loadPrefs, savePrefs, prefsFilePath, browserHostError, pickBrowserHost, type UiLang } from "./prefs";
 
@@ -36,9 +46,31 @@ function notifySafely(notify: Notify | undefined, message: string, type?: "info"
  */
 let sessionMessenger: ((text: string) => void) | null = null;
 
+/** Max characters of a quoted passage injected into the session (single question / chat-less ask). */
+const QA_QUOTE_MAX = 1200;
+/** Max characters of one quoted passage in a batch of questions. */
+const BATCH_QUOTE_MAX = 500;
+/** Max characters of one question text in a batch of questions. */
+const QUESTION_MAX = 1200;
+/** Max characters of one quoted passage in a revision request. */
+const REVISION_QUOTE_MAX = 600;
+/** Max characters of one revision comment. */
+const REVISION_COMMENT_MAX = 1200;
+
+/** Neutralize fenced code blocks in an injected quote so a user-selected ``` cannot break the prompt. */
+function fenceSafe(text: string): string {
+	return text.replace(/```/g, "'''");
+}
+
+/** Trim to max characters with an explicit marker; truncation is always stated, never silent. */
+function clip(text: string, max: number): string {
+	const s = (text ?? "").trim();
+	return s.length > max ? `${s.slice(0, max)}…[truncated: ${s.length - max} chars omitted]` : s;
+}
+
 /** Format a preview-page question as a user message injected into the pi session. */
 function formatAskMessage(qa: QaEntry & { title: string }): string {
-	const quote = qa.quote.length > 1200 ? `${qa.quote.slice(0, 1200)}\n…[quote truncated]` : qa.quote;
+	const quote = fenceSafe(clip(qa.quote, QA_QUOTE_MAX));
 	return [
 		"[Markdown preview page question]",
 		"",
@@ -50,10 +82,58 @@ function formatAskMessage(qa: QaEntry & { title: string }): string {
 		quote,
 		"```",
 		"",
-		`Question: ${qa.question}`,
+		`Question: ${fenceSafe(clip(qa.question, QUESTION_MAX))}`,
 		"",
 		`Answer based on the relevant file contents, then send the reply back to the preview page with the md_preview_reply tool (question_id: "${qa.id}").`,
 	].join("\n");
+}
+
+/**
+ * Format a batch of staged selected-text questions as ONE merged user message. Every item keeps
+ * its own question_id so each answer goes back through its own md_preview_reply call.
+ * The scaffolding is always English (same policy as formatAskMessage); user text keeps its language.
+ */
+function formatAskBatchMessage(batch: AskBatchNotice): string {
+	const count = batch.items.length;
+	const ids = batch.items.map((qa) => `"${qa.id}"`).join(", ");
+	const lines = [
+		`[Markdown preview page questions] (batch of ${count})`,
+		"",
+		`Document: "${batch.title}"`,
+		"",
+		`The user selected ${count} passage${count === 1 ? "" : "s"} in the preview page and asked one question about each.`,
+		"Every item carries its own question id; each reply is rendered in that item's own card.",
+	];
+	batch.items.forEach((qa, i) => {
+		lines.push(
+			"",
+			`--- item ${i + 1}/${count} · question_id: "${qa.id}"`,
+			"",
+			"Selected passage:",
+			"",
+			"```text",
+			fenceSafe(clip(qa.quote, BATCH_QUOTE_MAX)),
+			"```",
+			"",
+			`Question: ${fenceSafe(clip(qa.question, QUESTION_MAX))}`,
+		);
+	});
+	if (batch.history.length) {
+		lines.push(
+			"",
+			`Other questions on this document that are still unanswered: ${batch.history.map((h) => `"${h.id}"`).join(", ")}. Answer those too when they are still relevant.`,
+		);
+	}
+	lines.push(
+		"",
+		"Rules:",
+		`- Call the md_preview_reply tool exactly once per item, with question_id copied from this list: ${ids}. Never merge two items into one reply and never skip an id.`,
+		"- Answer from the actual file contents; keep every reply focused on its own passage.",
+		"- If an item cannot be answered, still reply to it with a one-line explanation instead of leaving its card pending.",
+		"- After the last reply you may add one short overall summary sentence inside that last reply; do not send a separate summary.",
+		"- Copy the ids verbatim: a wrong id leaves that card unanswered.",
+	);
+	return lines.join("\n");
 }
 
 /** Turns of chat history summarized into the injected chat message (contract item 4). */
@@ -136,6 +216,57 @@ function formatChatMessage(qa: AskNotice): string {
 	];
 	if (unanswered.length) lines.push("", `Earlier chat messages are still unanswered (${unanswered.join(", ")}); answer them too with md_preview_reply when appropriate.`);
 	lines.push("", `Reply to this chat message with the md_preview_reply tool (question_id: "${qa.id}"). Write the reply in Markdown; it is rendered as Markdown on the preview page.`);
+	return lines.join("\n");
+}
+
+/**
+ * Format a batch of staged revision comments as a user message. The model must edit the file
+ * directly (never answer through md_preview_reply) and close the batch with
+ * md_preview_revision_done carrying short verbatim highlight phrases, one per revised passage.
+ */
+function formatReviseMessage(n: RevisionNotice): string {
+	const count = n.items.length;
+	const lines = [
+		`[Markdown preview page revision request] (batch of ${count})`,
+		"",
+		`Document: "${n.title}"`,
+		`Document id: ${n.docId}`,
+		`File to edit: ${n.filePath}`,
+		"",
+		`The user marked ${count} passage${count === 1 ? "" : "s"} in the preview page and wrote one revision comment for each.`,
+		"Apply every comment to the Markdown file directly.",
+		"This is a document edit request, not a question: do not answer it with md_preview_reply and do not post a chat message. The file is the only deliverable.",
+	];
+	n.items.forEach((item, i) => {
+		lines.push(
+			"",
+			`--- revision ${i + 1}/${count}`,
+			"",
+			"Passage:",
+			"",
+			"```text",
+			fenceSafe(clip(item.quote, REVISION_QUOTE_MAX)),
+			"```",
+			"",
+			`Revision comment: ${fenceSafe(clip(item.comment, REVISION_COMMENT_MAX))}`,
+		);
+	});
+	lines.push(
+		"",
+		"How to apply:",
+		"- Read the file first, then edit it in place; keep front matter, heading levels, list and table structure, link targets and code fences intact unless a comment asks to change them.",
+		"- Apply the comments in the order above. If two comments touch the same passage, merge them into one coherent edit instead of overwriting each other.",
+		"- Quote and comment text may be in any language; write the edited prose in the document's existing language.",
+		"- If a comment is ambiguous, make the smallest reasonable edit and note the assumption in your final terminal message.",
+		"",
+		"When the file is saved:",
+		`- Call the md_preview_revision_done tool once with doc: "${n.docId}" and highlights: an array of short fragments copied verbatim from the revised text, one per revision item (at most ${count}; max ${MAX_HIGHLIGHTS} phrases of ${MAX_HIGHLIGHT_LEN} characters).`,
+		"- A highlight is a plain-text needle of roughly 8-40 characters copied from the edited passage exactly as it now reads on the page, without Markdown markers (**bold**, `code`, link syntax). Pick text that stays unique in the document.",
+		"- The tool marks those passages in the preview page with a color block that fades out. It does not post a reply, and you do not need to call md_preview_reply.",
+		"- If the page shows no mark for an item, its highlight did not match the rendered text; no retry is needed unless the user asks.",
+		"",
+		"Report what you changed in your normal answer.",
+	);
 	return lines.join("\n");
 }
 
@@ -266,8 +397,13 @@ async function previewMarkdown(
 			}
 		},
 	});
-	// Preview-page question -> wake the agent by injecting it into the pi session.
-	server.onAsk = (qa) => sessionMessenger?.(qa.chat ? formatChatMessage(qa) : formatAskMessage(qa));
+	// Preview-page traffic -> wake the agent by injecting it into the pi session. A batch of staged
+	// questions becomes one merged message; revision comments become an edit request, not a reply.
+	server.onAsk = (event) => {
+		if (event.batch) sessionMessenger?.(formatAskBatchMessage(event));
+		else sessionMessenger?.(event.chat ? formatChatMessage(event) : formatAskMessage(event));
+	};
+	server.onRevise = (notice) => sessionMessenger?.(formatReviseMessage(notice));
 	const handle = await server.openDocument(abs, { cwd: opts.cwd, title: opts.title, uiLang: opts.uiLang });
 
 	// One page URL drives the browser, the transcript and details.url (never mix hosts).
@@ -381,8 +517,9 @@ const mdPreviewReplyTool = defineTool({
 	name: "md_preview_reply",
 	label: "Reply to Preview Question",
 	description:
-		"Reply to a message the user sent from the Markdown preview page: a question about a passage selected in the page (the message starts with \"[Markdown preview page question]\") or a message typed in the chat box at the bottom of the page (the message starts with \"[Markdown preview page chat]\"). " +
-		"Call it only after receiving one of those messages; the reply is rendered as Markdown on the preview page, as a reply card that shows the quoted passage for selected-text questions or as an assistant message in the page chat.",
+		"Reply to a message the user sent from the Markdown preview page: a question about a passage selected in the page (the message starts with \"[Markdown preview page question]\" or \"[Markdown preview page questions]\" for a batch), or a message typed in the chat box at the bottom of the page (the message starts with \"[Markdown preview page chat]\"). " +
+		"Call it only after receiving one of those messages; the reply is rendered as Markdown on the preview page, as a reply card that shows the quoted passage for selected-text questions or as an assistant message in the page chat. " +
+		"A batch message lists several question ids: call this tool once per item with that item's own question_id, never merging items and never skipping an id.",
 	parameters: Type.Object({
 		question_id: Type.Optional(Type.String({
 			description: "Question ID (given in the question message, e.g. q1); omit to reply to the earliest unanswered question",
@@ -405,6 +542,56 @@ const mdPreviewReplyTool = defineTool({
 			content: [{ type: "text", text: result.message }],
 			isError: !result.ok,
 			details: { question_id: params.question_id ?? null },
+		};
+	},
+});
+
+/**
+ * Exit point for a batch of revision comments: the agent edits the Markdown file, then marks the
+ * batch done, which pushes the post-edit HTML and the highlight phrases to every open tab.
+ */
+const mdPreviewRevisionDoneTool = defineTool({
+	name: "md_preview_revision_done",
+	label: "Mark Preview Revision Done",
+	description:
+		"Mark a batch of revision comments from the Markdown preview page as applied, after the edits are saved to the file. " +
+		"Call it once after applying a message that starts with \"[Markdown preview page revision request]\": not once per comment, and never for a question or chat message. " +
+		"It pushes the updated HTML and the highlight phrases to every open tab, which is what turns the staged comments into a fading color block; without this call the page keeps showing the comments as pending. " +
+		"The tool neither posts a reply nor modifies the file. idempotent: calling it twice for the same batch does not extend the highlight window.",
+	parameters: Type.Object({
+		doc: Type.Optional(
+			Type.String({
+				description:
+					"Document id (e.g. d1) or the Markdown file path the revision request names; omit to target the most recently active previewed document",
+			}),
+		),
+		highlights: Type.Optional(
+			Type.Array(Type.String(), {
+				description:
+					`One short phrase per revised passage, copied verbatim from the newly written text, plain text without Markdown markers (max ${MAX_HIGHLIGHTS} phrases, ${MAX_HIGHLIGHT_LEN} chars each)`,
+			}),
+		),
+	}),
+	annotations: {
+		readOnlyHint: false,
+		destructiveHint: false,
+		idempotentHint: true,
+		openWorldHint: false,
+	},
+	async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+		const server = currentServer();
+		if (!server || !server.isOpen) {
+			return {
+				content: [{ type: "text", text: "No Markdown preview server is running; there is no revision batch to mark done." }],
+				isError: true,
+				details: undefined,
+			};
+		}
+		const result = await server.revisionDone(params.doc ?? undefined, params.highlights);
+		return {
+			content: [{ type: "text", text: result.message }],
+			isError: !result.ok,
+			details: { doc: result.docId ?? null, batch_id: result.batchId ?? null, highlights: params.highlights?.length ?? 0 },
 		};
 	},
 });
@@ -476,6 +663,7 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 	};
 	pi.registerTool(mdPreviewTool);
 	pi.registerTool(mdPreviewReplyTool);
+	pi.registerTool(mdPreviewRevisionDoneTool);
 
 	pi.registerCommand("md-preview", {
 		description: "Render and preview a Markdown file in the web UI: /md-preview <file path> [--host <ip>]",

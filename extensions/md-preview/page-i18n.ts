@@ -92,6 +92,31 @@ export interface PageStrings {
 	qaFullTitle: string;
 	qaClose: string;
 
+	// ---- stashed queues (batch ask / batch revise) ----
+	queueGroupAria: string;
+	queueAskBtn: string;
+	queueRevBtn: string;
+	queueAskAria: string;
+	queueRevAria: string;
+	queueSending: string;
+	queueAskSent: string;
+	queueRevSent: string;
+	queueSendFail: string;
+	queueFull: string;
+	stashOkAsk: string;
+	stashOkRev: string;
+	panelTitleAsk: string;
+	panelTitleRev: string;
+	panelRevPlaceholder: string;
+	panelStash: string;
+	panelEmpty: string;
+	qaWaitingSend: string;
+	qaPending: string;
+	reviseDone: string;
+	selRevBtn: string;
+	selAskAria: string;
+	selRevAria: string;
+
 	// ---- bottom chat with the agent ----
 	chatTitle: string;
 	chatEmpty: string;
@@ -192,6 +217,30 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		qaFullTitle: "Full reply",
 		qaClose: "Close",
 
+		queueGroupAria: "Stashed batches",
+		queueAskBtn: "Ask",
+		queueRevBtn: "Revise",
+		queueAskAria: "Send {n} stashed questions to the Agent",
+		queueRevAria: "Send {n} stashed revision comments to the Agent",
+		queueSending: "Sending…",
+		queueAskSent: "Sent {n} questions; waiting for the Agent…",
+		queueRevSent: "Sent {n} revision comments; waiting for the Agent…",
+		queueSendFail: "Failed to send the queue; nothing was dropped, please retry",
+		queueFull: "A batch can carry at most 20 items; send the queue before stashing more",
+		stashOkAsk: "Stashed; it goes out with the queue",
+		stashOkRev: "Stashed; it goes out with the queue",
+		panelTitleAsk: "Ask about the selection",
+		panelTitleRev: "Revise the selection",
+		panelRevPlaceholder: "Describe the change you want… (Enter to send, Shift+Enter for a new line)",
+		panelStash: "Stash",
+		panelEmpty: "Select a passage and write something first",
+		qaWaitingSend: "Sending…",
+		qaPending: "Waiting for the reply…",
+		reviseDone: "Revision complete; the document has been updated",
+		selRevBtn: "✎ Revise",
+		selAskAria: "Ask the Agent about the selected text",
+		selRevAria: "Request a revision of the selected text",
+
 		chatTitle: "Chat with the Agent",
 		chatEmpty: "No messages yet — ask the Agent anything about this document.",
 		chatPlaceholder: "Message the Agent… (Enter to send, Shift+Enter for a new line)",
@@ -283,6 +332,30 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		qaViewFull: "查看全文",
 		qaFullTitle: "完整回复",
 		qaClose: "关闭",
+
+		queueGroupAria: "暂存的批次",
+		queueAskBtn: "问答",
+		queueRevBtn: "修订",
+		queueAskAria: "把 {n} 条暂存提问发给 Agent",
+		queueRevAria: "把 {n} 条暂存修订发给 Agent",
+		queueSending: "发送中…",
+		queueAskSent: "已发送 {n} 条提问，等待 Agent 回复…",
+		queueRevSent: "已发送 {n} 条修订，等待 Agent 处理…",
+		queueSendFail: "队列发送失败，条目已保留，请重试",
+		queueFull: "单批最多暂存 20 条，请先发送当前队列。",
+		stashOkAsk: "已暂存，将随队列一起发送",
+		stashOkRev: "已暂存，将随队列一起发送",
+		panelTitleAsk: "就选中内容提问",
+		panelTitleRev: "修改选中内容",
+		panelRevPlaceholder: "描述你想要的修改…（Enter 发送，Shift+Enter 换行）",
+		panelStash: "暂存",
+		panelEmpty: "请先选中文字并填写内容",
+		qaWaitingSend: "发送中…",
+		qaPending: "等待回复…",
+		reviseDone: "修订完成，文档已更新",
+		selRevBtn: "✎ 修订",
+		selAskAria: "就选中文字向 Agent 提问",
+		selRevAria: "请 Agent 修订选中文字",
 
 		chatTitle: "与 Agent 对话",
 		chatEmpty: "还没有消息，直接向 Agent 提问吧",

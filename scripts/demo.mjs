@@ -182,6 +182,13 @@ if (smoke) {
 	if (!html.includes('class="admonition admonition-note"')) failures.push("页面缺少 NOTE 提示框");
 	if (!html.includes('class="footnote-ref"') || !html.includes('class="footnotes"')) failures.push("页面缺少脚注结构");
 
+	// 端点注入：批量问答/批量修订 URL 必须非 null（页面据 docState.askBatchUrl / reviseUrl 决定是否显示
+	// 问答/修订队列按钮与选中浮层的「修订」入口；为 null 时整套功能在真实页面上不可达）。
+	if (!html.includes("/ask-batch")) failures.push("页面未注入批量提问端点（/ask-batch）");
+	if (!html.includes("/revise")) failures.push("页面未注入批量修订端点（/revise）");
+	if (!/"askBatchUrl":"\/doc\/[^"]*\/ask-batch/.test(html)) failures.push("docState.askBatchUrl 为空（页面会隐藏问答队列按钮）");
+	if (!/"reviseUrl":"\/doc\/[^"]*\/revise/.test(html)) failures.push("docState.reviseUrl 为空（页面会隐藏修订入口）");
+
 	// raw HTML 必须按转义文本显示（README 契约）：回归 XSS 弹窗问题。
 	const probe = renderMarkdown('裸文本 <script>alert("xss")</script> 与 <img src=x onerror=alert(1)>');
 	if (probe.html.includes("<script") || probe.html.includes("<img")) failures.push("raw HTML 未被转义（存在可执行标签）");
@@ -365,6 +372,128 @@ if (smoke) {
 	if (!html3.includes("doc-foot")) failures.push("页面缺少页脚");
 	if (!html3.includes(shortHash)) failures.push(`页脚未显示当前 commit id（${shortHash}）`);
 
+	// ---------- 批量提问（ask-batch） ----------
+	// demo 的 ensureServer() 未传 onAsk，直接赋值计数即可（无其他订阅者）。
+	const notices = [];
+	server.onAsk = (n) => notices.push(n);
+
+	const postJson = (path, data) =>
+		fetch(docUrl(path), { method: "POST", headers: { "Content-Type": "application/json" }, body: typeof data === "string" ? data : JSON.stringify(data) });
+	const expectStatus = async (label, res, want) => {
+		if (res.status !== want) failures.push(`${label} -> ${res.status}（应为 ${want}）`);
+	};
+
+	const batchItems = [
+		{ quote: "核心链路平均延迟下降", question: "这个降幅的统计口径是什么？" },
+		{ quote: "错误率", question: "错误率是怎么采样得到的？" },
+	];
+	const batchRes = await postJson("/ask-batch", { items: batchItems });
+	await expectStatus("POST /ask-batch", batchRes, 200);
+	const batchData = batchRes.ok ? await batchRes.json() : {};
+	if (batchData.ok !== true) failures.push(`ask-batch 未返回 ok:true（${JSON.stringify(batchData.ok)}）`);
+	if (batchData.count !== 2) failures.push(`ask-batch count=${batchData.count}（应为 2）`);
+	if (!Array.isArray(batchData.items) || batchData.items.length !== 2) failures.push("ask-batch 未返回 2 条 QaPayload");
+	const batchIds = (batchData.items ?? []).map((i) => i.id);
+	if (batchIds.length !== 2 || new Set(batchIds).size !== 2) failures.push(`ask-batch id 异常：${batchIds.join()}`);
+	if (!batchIds.every((id) => /^q\d+$/.test(id))) failures.push(`ask-batch id 格式异常：${batchIds.join()}`);
+
+	// onAsk 必须恰好触发一次，并携带整批 items（顺序与请求一致）。
+	if (notices.length !== 1) failures.push(`ask-batch 触发 onAsk ${notices.length} 次（应恰好 1 次）`);
+	const notice = notices[0] ?? {};
+	if (notice.batch !== true) failures.push("ask-batch 的 onAsk 未标记 batch=true");
+	if ((notice.items ?? []).length !== 2) failures.push(`ask-batch onAsk items=${(notice.items ?? []).length}（应为 2）`);
+	if ((notice.items ?? []).map((i) => i.id).join() !== batchIds.join()) failures.push("ask-batch onAsk 的 id 顺序与请求不一致");
+	if (notice.docId !== handle.docId) failures.push(`ask-batch onAsk docId=${notice.docId}（应为 ${handle.docId}）`);
+
+	// SSE：2 帧 ask（各含对应 id），逐条 answer 落到各自卡片。
+	const acc2 = { text: "" };
+	const es2 = await fetch(docUrl("/events", { c: "smoke-batch" }));
+	const r2 = es2.ok && es2.body ? es2.body.getReader() : null;
+	if (!r2) failures.push("无法建立批量问答 SSE 连接");
+	if (r2) {
+		await readEventsUntil(r2, acc2, (t) => batchIds.every((id) => t.includes(`"id":"${id}"`)), "ask-batch SSE");
+		for (const id of batchIds) if (!acc2.text.includes(`"id":"${id}"`)) failures.push(`SSE 未推送批量问题 ${id}`);
+		const answers = ["按 7 日滑动窗口统计。", "按分钟级采样聚合。"];
+		for (let i = 0; i < batchIds.length; i++) {
+			const r = server.answerQuestion(batchIds[i], answers[i]);
+			if (!r.ok) failures.push(`批量 answerQuestion(${batchIds[i]}) 失败：${r.message}`);
+			await readEventsUntil(r2, acc2, (t) => t.includes(answers[i]), `answer ${batchIds[i]}`);
+			if (!acc2.text.includes(answers[i])) failures.push(`SSE answer 缺少 ${batchIds[i]} 的回复内容`);
+		}
+	}
+
+	// 校验矩阵。
+	await expectStatus("ask-batch 空 items", await postJson("/ask-batch", { items: [] }), 400);
+	await expectStatus("ask-batch 21 条", await postJson("/ask-batch", { items: Array.from({ length: 21 }, () => ({ quote: "q", question: "?" })) }), 400);
+	await expectStatus("ask-batch 空 quote", await postJson("/ask-batch", { items: [{ quote: "   ", question: "?" }] }), 400);
+	await expectStatus("ask-batch 空 question", await postJson("/ask-batch", { items: [{ quote: "q", question: "  " }] }), 400);
+	await expectStatus("ask-batch quote 超长", await postJson("/ask-batch", { items: [{ quote: "x".repeat(2001), question: "?" }] }), 400);
+	await expectStatus("ask-batch question 超长", await postJson("/ask-batch", { items: [{ quote: "q", question: "x".repeat(2001) }] }), 400);
+	await expectStatus("ask-batch items 非数组", await postJson("/ask-batch", { items: "nope" }), 400);
+	await expectStatus("ask-batch 空 body", await postJson("/ask-batch", ""), 400);
+	await expectStatus("ask-batch GET", await fetch(docUrl("/ask-batch")), 405);
+	// 超过 256KB 的 body 直接 413（先读完后丢弃，不在内存里放大）。
+	await expectStatus("ask-batch 超大 body", await postJson("/ask-batch", { items: [{ quote: "x".repeat(300 * 1024), question: "?" }] }), 413);
+
+	// 20 条上限本身必须成功，且仍只触发一次 onAsk。
+	notices.length = 0;
+	const capRes = await postJson("/ask-batch", { items: Array.from({ length: 20 }, (_, i) => ({ quote: `上限批量段落 ${i}`, question: `第 ${i} 个问题？` })) });
+	await expectStatus("ask-batch 20 条", capRes, 200);
+	if (notices.length !== 1 || (notices[0]?.items ?? []).length !== 20) failures.push("ask-batch 20 条未合并为一次 onAsk");
+
+	// ---------- 批量修订（revise / revision-done） ----------
+	const revItems = [
+		{ quote: "P99 延迟", comment: "补一句口径说明：P99 为 7 日滑动窗口。" },
+		{ quote: "单位成本", comment: "货币单位统一写成「元」。" },
+	];
+	const revRes = await postJson("/revise", { items: revItems });
+	await expectStatus("POST /revise", revRes, 200);
+	const revData = revRes.ok ? await revRes.json() : {};
+	if (revData.ok !== true) failures.push("revise 未返回 ok:true");
+	if (!Number.isInteger(revData.batchId) || revData.batchId < 1) failures.push(`revise batchId 异常：${revData.batchId}`);
+	if (revData.count !== 2) failures.push(`revise count=${revData.count}（应为 2）`);
+
+	await expectStatus("revise 空 items", await postJson("/revise", { items: [] }), 400);
+	await expectStatus("revise 21 条", await postJson("/revise", { items: Array.from({ length: 21 }, () => ({ quote: "q", comment: "c" })) }), 400);
+	await expectStatus("revise 空 comment", await postJson("/revise", { items: [{ quote: "q", comment: "  " }] }), 400);
+	await expectStatus("revise 空 quote", await postJson("/revise", { items: [{ quote: "", comment: "c" }] }), 400);
+	await expectStatus("revise comment 超长", await postJson("/revise", { items: [{ quote: "q", comment: "x".repeat(2001) }] }), 400);
+	await expectStatus("revise GET", await fetch(docUrl("/revise")), 405);
+	await expectStatus(
+		"revise 未知文档",
+		await fetch(serverUrl("/doc/nope/revise"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: revItems }) }),
+		404,
+	);
+
+	// revisionDone：返回 batchId、推送 revision-done 帧（页面注入由模块 B 覆盖，此处不断言 HTML）。
+	const revId = revData.batchId;
+	const done = await server.revisionDone(undefined, ["P99 延迟", "单位成本"]);
+	if (!done.ok) failures.push(`revisionDone 失败：${done.message}`);
+	if (done.batchId !== revId) failures.push(`revisionDone batchId=${done.batchId}（应为 ${revId}）`);
+	if (done.docId !== handle.docId) failures.push(`revisionDone docId=${done.docId}（应为 ${handle.docId}）`);
+
+	if (r2) {
+		await readEventsUntil(r2, acc2, (t) => t.includes("event: revision-done"), "revision-done");
+		const tail = acc2.text.slice(acc2.text.lastIndexOf("event: revision-done"));
+		for (const needle of [`"batchId":${revId}`, '"docId":"', '"highlights":["P99 延迟","单位成本"]', '"at":']) {
+			if (!tail.includes(needle)) failures.push(`revision-done 帧缺少 ${needle}`);
+		}
+	}
+
+	// 幂等：重复调用成功、换 highlights、同 batchId。
+	const done2 = await server.revisionDone(undefined, ["错误率"]);
+	if (!done2.ok || done2.batchId !== revId) failures.push(`revisionDone 重复调用应幂等成功（${done2.message}）`);
+
+	// 未知文档 / 过期窗口。
+	const done3 = await server.revisionDone("d999", []);
+	if (done3.ok) failures.push("revisionDone 未知文档应失败");
+	process.env.MD_PREVIEW_REVISION_TTL_MS = "50";
+	await new Promise((r) => setTimeout(r, 80));
+	const done4 = await server.revisionDone(undefined, []);
+	if (done4.ok) failures.push("revisionDone 过期批次应失败");
+	delete process.env.MD_PREVIEW_REVISION_TTL_MS;
+	if (r2) await r2.cancel();
+
 	await server.shutdown("smoke 完成");
 	rmSync(tmpConfig, { recursive: true, force: true });
 	if (failures.length) {
@@ -372,7 +501,7 @@ if (smoke) {
 		for (const f of failures) console.error(`  - ${f}`);
 		process.exit(1);
 	}
-	console.log("smoke 通过：页面渲染、SSE、偏好持久化（/prefs）、选中提问（ask/answer/SSE 推送）均正常。");
+	console.log("smoke 通过：页面渲染、SSE、偏好持久化（/prefs）、选中提问（ask/answer/SSE 推送）、批量提问（ask-batch 合并注入/逐条回复）、批量修订（revise/revision-done）均正常。");
 	process.exit(0);
 }
 
