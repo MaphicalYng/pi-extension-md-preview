@@ -21,6 +21,13 @@ const IDLE_MS = 8_000; // shutdown this long after the last tab goes away
 const NEVER_OPENED_MS = 5 * 60_000; // shutdown if nobody ever opened a tab
 const SWEEP_MS = 3_000;
 const HEARTBEAT_MS = 25_000;
+/** Hard cap on progress frames: one flush timer, all documents coalesced (125ms => 8 fps). */
+const PROGRESS_FLUSH_MS = 125;
+/** A change of fewer than this many characters, with an identical phase/tool/snippet, earns no frame. */
+const PROGRESS_CHARS_STEP = 32;
+/** Shared cap for the snippet tail (server clamps, index.ts caps the sample it sends). */
+export const PROGRESS_SNIPPET_MAX = 80;
+const PROGRESS_TOOL_MAX = 40;
 
 export interface PreviewHandle {
 	/** Full URL of the rendered page (always carries `?token=...`). */
@@ -61,6 +68,12 @@ interface DocState {
 	viewers: Map<string, string>;
 	/** UI language of this document: drives page rendering, SSE payloads and error notices. */
 	uiLang: UiLang;
+	/**
+	 * Working directory of the pi session that previewed this document last, as an absolute
+	 * path. Undefined for documents registered through a Markdown link (resolveDocToken) and
+	 * for callers that never pass a cwd; the page then falls back to the document's directory.
+	 */
+	sessionCwd?: string;
 }
 
 /** One question-and-answer record created from a selected-text question or a chat message on the preview page. */
@@ -98,6 +111,48 @@ export interface QaPayload {
 	answerHtml: string | null;
 	askedAt: number;
 	answeredAt: number | null;
+}
+
+/** Stage of the agent turn shown on a pending Q&A card or chat turn. */
+export type ProgressPhase = "thinking" | "tool" | "writing" | "idle";
+
+/** One `progress` SSE frame (M1/M2 shared contract: never rename the event or these fields). */
+export interface ProgressPayload {
+	docId: string;
+	phase: ProgressPhase;
+	/** Tool name while phase === "tool" (never tool arguments); null otherwise. */
+	tool: string | null;
+	/** Assistant text characters produced so far in this message. */
+	chars: number;
+	/** Whitespace-collapsed tail of the assistant text, capped at PROGRESS_SNIPPET_MAX. */
+	snippet: string;
+	/** Epoch ms this snapshot was written. */
+	at: number;
+}
+
+/** One phase sample produced by a pi event; merged into every document with a pending entry. */
+export interface ProgressPatch {
+	phase: Exclude<ProgressPhase, "idle">;
+	tool?: string | null;
+	chars?: number;
+	snippet?: string;
+}
+
+/** Internal snapshot: ProgressPayload minus the per-frame bits (docId, at). */
+interface ProgressState {
+	phase: Exclude<ProgressPhase, "idle">;
+	tool: string | null;
+	chars: number;
+	snippet: string;
+}
+
+/** De-duplication rule: identical phase/tool/snippet and a sub-step character change are one frame. */
+function sameProgress(a: ProgressState, b: ProgressState): boolean {
+	return a.phase === b.phase && a.tool === b.tool && a.snippet === b.snippet && Math.abs(b.chars - a.chars) < PROGRESS_CHARS_STEP;
+}
+
+function clipProgress(text: string, max: number): string {
+	return text.length > max ? text.slice(0, max) : text;
 }
 
 /**
@@ -311,6 +366,14 @@ export class PreviewServer {
 	onRevise: ((notice: RevisionNotice) => void) | null = null;
 	private qa = new Map<string, QaEntry>();
 	private qaSeq = 0;
+	/** Live progress snapshot per document (only documents with an unanswered entry get one). */
+	private progress = new Map<string, ProgressState>();
+	/** Last snapshot actually written to SSE, for de-duplication. */
+	private progressSent = new Map<string, ProgressState>();
+	/** Documents whose snapshot changed since the last flush. */
+	private progressDirty = new Set<string>();
+	/** Single coalescing timer; at most one flush per PROGRESS_FLUSH_MS. */
+	private progressTimer: ReturnType<typeof setTimeout> | null = null;
 	/** Newest revision batch per document id. */
 	private revisions = new Map<string, RevisionRecord>();
 	private revisionSeq = 0;
@@ -366,10 +429,21 @@ export class PreviewServer {
 		const uiLang = resolveUiLang(opts.uiLang);
 		const existing = this.byPath.get(abs);
 		if (existing) {
+			// The badge follows the session that opened the document last, so a changed cwd has to
+			// reach open tabs. Fold it into the broadcasts this branch already sends instead of
+			// pushing a second frame that would only carry the badge.
+			const resolvedCwd = opts.cwd ? path.resolve(opts.cwd) : undefined;
+			let cwdChanged = false;
+			if (resolvedCwd !== undefined && resolvedCwd !== existing.sessionCwd) {
+				existing.sessionCwd = resolvedCwd;
+				cwdChanged = true;
+			}
+			let pushed = false;
 			if (opts.title && opts.title !== existing.explicitTitle) {
 				existing.explicitTitle = opts.title;
 				await this.refresh(existing);
 				this.broadcastUpdate(existing);
+				pushed = true;
 			}
 			// Language update policy (PM revision): only an explicitly supplied uiLang may
 			// change the language of an already-open document, so a repeated call that
@@ -380,7 +454,9 @@ export class PreviewServer {
 				// then push it over SSE — open tabs pick it up on their auto-refresh.
 				await this.refresh(existing);
 				this.broadcastUpdate(existing);
+				pushed = true;
 			}
+			if (cwdChanged && !pushed) this.broadcastUpdate(existing);
 			await this.refreshIfStale(existing);
 			return this.handleFor(existing, true);
 		}
@@ -399,6 +475,7 @@ export class PreviewServer {
 			reloadTimer: null,
 			viewers: new Map(),
 			uiLang,
+			sessionCwd: opts.cwd ? path.resolve(opts.cwd) : undefined,
 		};
 		this.docs.set(doc.id, doc);
 		this.byPath.set(abs, doc);
@@ -439,6 +516,14 @@ export class PreviewServer {
 
 	private titleFor(doc: DocState): string {
 		return doc.explicitTitle || doc.rendered.title || doc.label;
+	}
+
+	/**
+	 * Absolute directory the page's workspace badge shows: the previewing session's cwd when it
+	 * is known, otherwise the document's own directory (link-registered docs and legacy callers).
+	 */
+	private badgeCwd(doc: DocState): string {
+		return doc.sessionCwd ?? doc.rootDir;
 	}
 
 	// ------------------------------------------------------- render + watch
@@ -539,6 +624,7 @@ export class PreviewServer {
 			toc: doc.rendered.toc as TocItem[],
 			title: this.titleFor(doc),
 			lang: doc.uiLang,
+			sessionCwd: this.badgeCwd(doc),
 		});
 		this.broadcastEvent(doc.id, "update", payload);
 	}
@@ -684,8 +770,99 @@ export class PreviewServer {
 		entry.answerHtml = renderMarkdown(answer).html;
 		entry.answerText = answer;
 		entry.answeredAt = Date.now();
+		// Progress must never outlive the answer it describes: idle first, then the answer.
+		this.clearProgress(entry.docId);
 		this.broadcastEvent(entry.docId, "answer", JSON.stringify({ id: entry.id, answerHtml: entry.answerHtml, answeredAt: entry.answeredAt }));
 		return { ok: true, message: `Answered preview question ${entry.id}; the reply card has been pushed to the browser.` };
+	}
+
+	// ------------------------------------------------------- live progress (M1)
+
+	/** True when at least one question or chat message of this document still awaits a reply. */
+	hasPending(docId: string): boolean {
+		for (const e of this.qa.values()) if (e.docId === docId && !e.answerHtml) return true;
+		return false;
+	}
+
+	/**
+	 * Feed one pi extension event into the live progress of every document that still has an
+	 * unanswered entry. Total and cheap: no pending entry, no viewer or a duplicate sample all
+	 * just return. Frames are coalesced and flushed at most once per PROGRESS_FLUSH_MS.
+	 *
+	 * Progress is document-level, not entry-level: pi events carry no docId, so the honest
+	 * statement is "the agent is working", never "this question is being answered".
+	 */
+	publishProgress(patch: ProgressPatch): void {
+		const next: ProgressState = {
+			phase: patch.phase,
+			tool: patch.tool ? clipProgress(patch.tool, PROGRESS_TOOL_MAX) : null,
+			chars: patch.chars && patch.chars > 0 ? Math.floor(patch.chars) : 0,
+			snippet: patch.snippet ? clipProgress(patch.snippet.replace(/\s+/g, " ").trim(), PROGRESS_SNIPPET_MAX) : "",
+		};
+		let touched = false;
+		for (const doc of this.docs.values()) {
+			if (!this.hasPending(doc.id)) continue;
+			this.progress.set(doc.id, next);
+			this.progressDirty.add(doc.id);
+			touched = true;
+		}
+		if (touched) this.scheduleProgressFlush();
+	}
+
+	/** Drop progress for one document, or for all of them when `docId` is omitted. */
+	clearProgress(docId?: string): void {
+		const ids = docId ? [docId] : [...this.progress.keys()];
+		for (const id of ids) {
+			if (!this.progress.delete(id)) continue;
+			this.progressSent.delete(id);
+			this.progressDirty.delete(id);
+			this.broadcastEvent(id, "progress", JSON.stringify(this.progressPayload(id, null)));
+		}
+	}
+
+	/** Current snapshot for a document, for the init frame (null when nothing is in flight). */
+	progressOf(docId: string): ProgressPayload | null {
+		const state = this.progress.get(docId);
+		return state ? this.progressPayload(docId, state) : null;
+	}
+
+	private progressPayload(docId: string, state: ProgressState | null): ProgressPayload {
+		return {
+			docId,
+			phase: state ? state.phase : "idle",
+			tool: state ? state.tool : null,
+			chars: state ? state.chars : 0,
+			snippet: state ? state.snippet : "",
+			at: Date.now(),
+		};
+	}
+
+	private scheduleProgressFlush(): void {
+		if (this.progressTimer || this.shuttingDown) return;
+		if (this.sseConns.size === 0) return; // nobody to tell: the snapshot is resent on reconnect
+		this.progressTimer = setTimeout(() => {
+			this.progressTimer = null;
+			this.flushProgress();
+		}, PROGRESS_FLUSH_MS);
+		this.progressTimer.unref();
+	}
+
+	private flushProgress(): void {
+		const dirty = [...this.progressDirty];
+		this.progressDirty.clear();
+		for (const docId of dirty) {
+			const state = this.progress.get(docId);
+			if (!state) continue;
+			if (!this.hasPending(docId)) {
+				this.clearProgress(docId);
+				continue;
+			}
+			const sent = this.progressSent.get(docId);
+			if (sent && sameProgress(sent, state)) continue;
+			this.progressSent.set(docId, state);
+			this.broadcastEvent(docId, "progress", JSON.stringify(this.progressPayload(docId, state)));
+		}
+		if (this.progressDirty.size > 0) this.scheduleProgressFlush();
 	}
 
 	// ------------------------------------------------------------- revisions
@@ -1005,6 +1182,7 @@ export class PreviewServer {
 			mermaidUrl: this.withToken("/mermaid.mjs"),
 			lang: doc.uiLang,
 			revision: this.revisionState(doc.id),
+			sessionCwd: this.badgeCwd(doc),
 		};
 		const html = renderPage(args);
 		res.statusCode = 200;
@@ -1159,13 +1337,16 @@ export class PreviewServer {
 		res.write("retry: 2000\n\n");
 		// A tab that loaded the page before the latest render syncs immediately.
 		if (url.searchParams.get("v") !== String(doc.version)) {
-			this.writeSse(res, "init", JSON.stringify({ html: doc.rendered.html, toc: doc.rendered.toc, title: this.titleFor(doc), qa: this.qaList(doc.id), lang: doc.uiLang, revision: this.revisionState(doc.id) }));
+			this.writeSse(res, "init", JSON.stringify({ html: doc.rendered.html, toc: doc.rendered.toc, title: this.titleFor(doc), qa: this.qaList(doc.id), lang: doc.uiLang, revision: this.revisionState(doc.id), progress: this.progressOf(doc.id), sessionCwd: this.badgeCwd(doc) }));
 		}
 		this.sseConns.set(connId, res);
 		this.connDoc.set(connId, doc.id);
 		doc.viewers.set(connId, clientId);
 		this.hadViewer = true;
 		this.noViewerSince = null;
+		// Reconnect catch-up: a tab that (re)connects mid-turn must not lose the live progress line.
+		const live = this.progress.get(doc.id);
+		if (live) this.writeSse(res, "progress", JSON.stringify(this.progressPayload(doc.id, live)));
 		req.on("close", () => {
 			this.sseConns.delete(connId);
 			this.connDoc.delete(connId);
@@ -1360,6 +1541,13 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 	async shutdown(reason: string): Promise<void> {
 		if (this.shuttingDown) return;
 		this.shuttingDown = true;
+		if (this.progressTimer) {
+			clearTimeout(this.progressTimer);
+			this.progressTimer = null;
+		}
+		this.progress.clear();
+		this.progressSent.clear();
+		this.progressDirty.clear();
 		for (const res of this.sseConns.values()) this.writeSse(res, "closing", JSON.stringify({ reason }));
 		for (const doc of this.docs.values()) {
 			if (doc.reloadTimer) clearTimeout(doc.reloadTimer);

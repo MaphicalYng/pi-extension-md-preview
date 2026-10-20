@@ -28,6 +28,9 @@ export interface PageStrings {
 	/** Document title suffix after "·". */
 	titleSuffix: string;
 
+	// ---- topbar: workspace badge (last path segment of the previewing session cwd) ----
+	cwdBadge: string;
+
 	// ---- topbar: live pill ----
 	liveSyncText: string;
 	liveSyncTitle: string;
@@ -112,6 +115,12 @@ export interface PageStrings {
 	panelEmpty: string;
 	qaWaitingSend: string;
 	qaPending: string;
+	// ---- live Q&A progress (M1): stage line inside a pending card / chat turn ----
+	progThinking: string;
+	progTool: string;
+	progToolName: string;
+	progWriting: string;
+	progChars: string;
 	reviseDone: string;
 	selRevBtn: string;
 	selAskAria: string;
@@ -158,6 +167,7 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		locale: "en-US",
 		htmlLang: "en",
 		titleSuffix: "Markdown Preview",
+		cwdBadge: "Workspace",
 
 		liveSyncText: "Live sync",
 		liveSyncTitle: "The page updates automatically when the file changes",
@@ -236,6 +246,11 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		panelEmpty: "Select a passage and write something first",
 		qaWaitingSend: "Sending…",
 		qaPending: "Waiting for the reply…",
+		progThinking: "Agent is thinking…",
+		progTool: "Running a tool…",
+		progToolName: "Running {tool}…",
+		progWriting: "Writing the reply…",
+		progChars: "{n} chars",
 		reviseDone: "Revision complete; the document has been updated",
 		selRevBtn: "✎ Revise",
 		selAskAria: "Ask the Agent about the selected text",
@@ -274,6 +289,7 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		locale: "zh-CN",
 		htmlLang: "zh-CN",
 		titleSuffix: "Markdown 预览",
+		cwdBadge: "工作目录",
 
 		liveSyncText: "实时同步",
 		liveSyncTitle: "文件修改后页面会自动更新",
@@ -352,6 +368,11 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		panelEmpty: "请先选中文字并填写内容",
 		qaWaitingSend: "发送中…",
 		qaPending: "等待回复…",
+		progThinking: "Agent 正在思考…",
+		progTool: "正在调用工具…",
+		progToolName: "正在调用 {tool}…",
+		progWriting: "正在生成回答…",
+		progChars: "已生成 {n} 字",
 		reviseDone: "修订完成，文档已更新",
 		selRevBtn: "✎ 修订",
 		selAskAria: "就选中文字向 Agent 提问",

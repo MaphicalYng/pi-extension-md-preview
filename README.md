@@ -19,10 +19,12 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 | --- | --- |
 | Agent-initiated preview + auto-open browser | The `md_preview` tool starts a local server and opens the page in the system default browser (macOS `open` / Linux `xdg-open` / Windows `start`), de-duplicating across tabs (an already-open tab is reused); `/md-preview <file> --host <ip>` can pick which IP the tab opens with, and `/md-preview-host <ip>` persists that choice in the user-level config so every pi instance opens at it |
 | No babysitting | The tool returns immediately and the server runs on its own. It exits 8 s after the last tab closes (or 5 min after start if no tab ever opened), with a final safety exit when the Pi session shuts down |
+| Workspace badge in the top bar | Next to the document path, the top bar shows the working directory of the pi session that opened the document: the last path segment only, with the full path on hover. Below 720px the label is hidden and the directory name stays. Reopening the same document from a session with a different working directory refreshes the badge |
 | Ask the agent about selected text | Select text in the page → floating "Ask" button → the question is injected into the Pi session to wake the agent → the answer is pushed back live via the `md_preview_reply` tool as a reply card (quote / answer / timestamp) beside the document, with the quoted text highlighted in orange |
 | Stash a batch of questions | Select a passage → "✦ Ask" → type the question → **Stash** parks it in the queue and closes the panel (the toolbar's **Ask** button shows how many are waiting); one click later sends the whole batch as a single token-gated `POST /doc/<id>/ask-batch`, and the agent's per-item `md_preview_reply` calls fill in each item's own Q&A card |
 | Chat with the agent about the document | A chat area at the bottom of the page takes a message about the whole document (no text selection needed) and injects it into the Pi session together with a summary of the recent chat turns; the agent replies with `md_preview_reply` and the answer appears as an "Agent" message in the chat feed (newest first), restored after refresh/reopen |
 | Stash a batch of revisions | Select a passage → "✎ Revise" → **Stash** the revision comment (the toolbar's **Revise** button counts the queue); one click submits it via `POST /doc/<id>/revise`, the agent edits the Markdown file directly **without posting replies**, then calls `md_preview_revision_done` (`doc?`, `highlights?`) so the page marks the rewritten passages with a color block that fades out in ~3 s |
+| Live progress on a pending wait row | While the agent works on a pending question or chat message, its wait row replaces the static waiting line with the current stage — `Agent is thinking…` → `Running {tool}…` → `Writing the reply… · {n} chars` — and the answer replaces the row when it arrives. Frames are throttled (at most ~8 per second), sent only while that document still has an unanswered entry, shared by every tab of the document; a tab that missed a re-render catches up from the init frame, which carries the current snapshot. Only the stage, tool name, character count and an ≤80-character tail of the text reach the browser — never thinking text, tool arguments or the reply body |
 | Markdown as a web page | GFM renderer built on `marked`: headings, tables, fenced code (25+ languages highlighted), blockquotes (incl. `[!NOTE]` … `[!CAUTION]` admonitions), task lists, footnotes, images, autolinks |
 | Mermaid diagrams | `mermaid` fenced blocks render as diagrams; the mermaid runtime is lazy-loaded from the preview server's own origin (flowcharts, sequence diagrams, …) |
 | Bilingual UI (en / zh) | The agent always picks the page UI language explicitly via the required `ui_lang` tool parameter, chosen from the user's language; an in-page 中/EN switch lets the reader override it (remembered in `localStorage`) |
@@ -129,7 +131,9 @@ Agent writes .md ──► md_preview tool ──► local preview server (127.0
 
 - Left table of contents (shown when ≥2 headings): highlights the current section while scrolling, smooth-scrolls on click, collapses into a drawer on mobile.
 - Top toolbar: theme switcher (system / light / dark), reading-background swatches (white / dim / wood / cyan — paper tones in light mode, matching dark variants in dark mode), font-size A- / A+, line-height stepper, language switch (中 / EN), download source, export HTML, and a page progress bar.
+- Workspace badge: the last path segment of the working directory of the session that opened the document, with the full path on hover; below 720px the label is hidden and only the directory name stays.
 - Code blocks: language label, one-click copy (with success feedback), per-language highlighting; unsupported languages degrade to plain text.
+- Live progress: a pending question card or chat turn shows the agent's stage — thinking, running a tool (with its name), then writing with a character count and a short tail of the text — and the answer replaces the wait line when it arrives.
 - Ask about selection: select any body text and click the floating "Ask" button; once the agent replies, a card appears beside the document with the quote, answer and timestamp, and the quoted text is highlighted in orange.
 - Stash queue: the toolbar's **Ask** / **Revise** buttons carry a count badge for stashed items (hidden at zero, disabled while a send is in flight); one click flushes that whole queue in a single request, and a failed send keeps every entry and its badge.
 - Revision wash: when a revision batch is marked done, each matching passage gets a color block that holds for ~2 s and fades out by ~3 s; a reload inside that window replays it on the original schedule.
@@ -223,7 +227,7 @@ While reading, select any body text and click the floating "✦ Ask" button to t
 { "question_id": "q1", "text": "The latency drop mostly comes from a higher cache hit rate… (Markdown supported)" }
 ```
 
-The reply appears in real time as a card **beside the document** (synced across every tab showing it), containing the quote, the answer and the timestamp; the quoted text is highlighted in orange in the body. Q&A lives with the server — cards and highlights restore automatically after refresh/reopen (highlights are re-located by quote text, so a cross-element selection may lose its highlight on restore; the card itself is unaffected). Pending cards show "Waiting for the agent's reply…". On narrow screens (<1080px) the side rail is hidden and only the orange highlight remains.
+The reply appears in real time as a card **beside the document** (synced across every tab showing it), containing the quote, the answer and the timestamp; the quoted text is highlighted in orange in the body. Q&A lives with the server — cards and highlights restore automatically after refresh/reopen (highlights are re-located by quote text, so a cross-element selection may lose its highlight on restore; the card itself is unaffected). Pending cards show "Waiting for the agent's reply…", replaced by the live stage while the agent works on it (thinking, running a tool with its name, then writing with a character count). On narrow screens (<1080px) the side rail is hidden and only the orange highlight remains.
 
 To ask about several passages in one go, see [Stash a batch of questions and revisions](#stash-a-batch-of-questions-and-revisions).
 
@@ -238,7 +242,7 @@ Both floating buttons can defer their work instead of sending it immediately.
 { "question_id": "q4", "text": "… (Markdown supported)" }
 ```
 
-Each reply lands in that item's own Q&A card, exactly like a single question: the cards start at "Waiting for the reply…" and fill in as the answers arrive. A failed send keeps the queue intact (the toast says so) and drops nothing.
+Each reply lands in that item's own Q&A card, exactly like a single question: the cards start at "Waiting for the reply…" and fill in as the answers arrive; while the batch is being processed they carry the same live stage as a single question. A failed send keeps the queue intact (the toast says so) and drops nothing.
 
 **Revisions.** Select text → "✎ Revise" → describe the change → **Stash** or **Send**; the toolbar's **Revise** button counts the queue and submits it via `POST /doc/<id>/revise`. The injected message is an explicit *document edit request*: the agent edits the Markdown file in place and does **not** answer through `md_preview_reply` or post a chat message — the rewritten document is the only deliverable, so no reply card appears.
 
@@ -263,6 +267,7 @@ The tool re-renders the document, pushes the new HTML to every open tab, then br
 - The mermaid runtime is served same-origin by the preview server (`/mermaid.mjs`), so diagram rendering produces no external requests either.
 - Static assets and link resolution are validated to stay inside (session cwd ∪ previewed document directories); unknown file types return 404, and dangerous types like `text/html` are force-served as `text/plain`.
 - The extension never invokes a shell: opening the browser uses `spawn` (`open` / `xdg-open` / `cmd start`) with immediate `unref`, degrading gracefully to "open the URL manually"; the footer version stamp spawns `git` once per process against the extension root (no shell, cached), silently degrading to hidden on failure.
+- Exported HTML snapshots keep the workspace badge but drop the absolute path inside it: the `title`, `aria-label` and `data-cwd` attributes are cleared, leaving the directory name. Local paths inside the document body follow the existing rendering rules.
 - The port is random (`listen(0)`); tab-close detection uses both `sendBeacon` and SSE disconnect, and server shutdown is idempotent.
 
 ## Known limitations
@@ -273,6 +278,7 @@ The tool re-renders the document, pushes the new HTML to every open tab, then br
 - In exported HTML snapshots, mermaid SVG colors stay at the snapshot-time theme even if you switch themes in the snapshot.
 - A batch carries at most 20 items; the 21st entry is refused when stashed, so a queue is always sendable — there is no in-page control to drop individual stashed items or to clear the queue.
 - Revision highlights are located by plain-text needle: a phrase that spans inline elements, or no longer matches the edited text, marks nothing (the tool's output names the misses).
+- Question progress is document-level, not per-question: pi events carry no document id, so a pending question or chat message shows the agent's current stage even while the turn works on something else. It is a stage indicator, not a log — no history, no percentage, no cancel control.
 
 ## Development
 

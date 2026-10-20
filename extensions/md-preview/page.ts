@@ -30,6 +30,12 @@ export interface PageOptions {
 	title: string;
 	/** Small subtitle shown under the title, typically the file name. */
 	subtitle: string;
+	/**
+	 * Absolute working directory of the pi session that opened this preview. The topbar badge
+	 * shows its last path segment only; the full path stays in title/aria-label. Omitted = the
+	 * badge renders hidden (standalone renders) and a later SSE update may reveal it.
+	 */
+	sessionCwd?: string;
 	bodyHtml: string;
 	toc: TocItem[];
 	/** SSE endpoint for live updates. */
@@ -368,7 +374,41 @@ body {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+	/* Flex item of .doc-meta: without this the nowrap path stops shrinking. */
+	min-width: 0;
 }
+.doc-meta {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	min-width: 0;
+}
+.doc-cwd {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	flex: none;
+	min-width: 0;
+	max-width: 46%;
+	padding: 1px 8px;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: var(--accent-soft);
+	font-size: 0.7rem;
+	line-height: 1.5;
+	color: var(--text-2);
+	white-space: nowrap;
+}
+.doc-cwd[hidden] { display: none; }
+.doc-cwd[hidden] + .doc-meta-sep { display: none; }
+.doc-cwd-label { color: var(--text-3); }
+.doc-cwd-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	font-weight: 600;
+}
+.doc-meta-sep { color: var(--text-3); }
 
 .controls { display: flex; align-items: center; gap: 10px; flex: none; }
 
@@ -994,6 +1034,8 @@ body {
 .qa-wait { color: var(--text-3); display: flex; align-items: center; gap: 7px; padding: 4px 0; }
 .qa-pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: qaPulse 1.2s ease-in-out infinite; }
 @keyframes qaPulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+.qa-wait-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qa-prog-snippet { min-width: 0; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); opacity: 0.75; font-size: 0.92em; }
 
 /* Quoted selection highlight (orange). */
 .content mark.mdp-qa-hl {
@@ -1288,6 +1330,8 @@ body {
 	.layout { padding: 20px 16px 96px; }
 	.brand-mark { display: none; }
 	.doc-sub { display: none; }
+	.doc-cwd { max-width: 62%; }
+	.doc-cwd-label { display: none; }
 	.content h1 { font-size: 1.72em; }
 	.heading-anchor { display: none; }
 	.to-top { right: 16px; bottom: 16px; }
@@ -1538,6 +1582,8 @@ const PAGE_JS = `
 				list[j].setAttribute(attrs[a][1], T[k] || "");
 			}
 		}
+		// The workspace badge composes its own aria-label, so a language switch has to redo it.
+		refreshCwdAria();
 	}
 
 	function markLangActive() {
@@ -2217,6 +2263,28 @@ const PAGE_JS = `
 		}
 	}
 
+	/* ---------- workspace badge (session cwd) ---------- */
+
+	// Show the last path segment only; the full path stays in title/aria-label.
+	function applyCwd(p) {
+		var chip = document.getElementById("docCwd");
+		if (!chip || typeof p !== "string" || !p) return;
+		var nameEl = chip.querySelector(".doc-cwd-name");
+		if (nameEl) nameEl.textContent = baseName(p) || p;
+		chip.setAttribute("data-cwd", p);
+		chip.title = p;
+		chip.setAttribute("aria-label", (T.cwdBadge || "Workspace") + ": " + p);
+		chip.hidden = false;
+	}
+
+	// The composed aria-label follows the active language after an in-page switch.
+	function refreshCwdAria() {
+		var chip = document.getElementById("docCwd");
+		if (!chip) return;
+		var p = chip.getAttribute("data-cwd");
+		if (p) chip.setAttribute("aria-label", (T.cwdBadge || "Workspace") + ": " + p);
+	}
+
 	function applyUpdate(d, quiet) {
 		// The server may switch the UI language; a local choice (localStorage) still wins.
 		if (d.lang === "en" || d.lang === "zh") {
@@ -2225,6 +2293,9 @@ const PAGE_JS = `
 			try { chosen = localStorage.getItem("mdp.lang"); } catch (err) {}
 			if (chosen !== "en" && chosen !== "zh") applyLang(d.lang);
 		}
+		// The badge follows the session that re-opened the document; older servers omit the field,
+		// in which case the rendered value is kept untouched.
+		if (typeof d.sessionCwd === "string" && d.sessionCwd) applyCwd(d.sessionCwd);
 		var content = document.getElementById("content");
 		content.innerHTML = d.html;
 		// New content arrives with the server-rendered (English) fallback labels of
@@ -2270,6 +2341,7 @@ const PAGE_JS = `
 			// browsers keep retrying even on 4xx: probe too after a few consecutive
 			// failures without a single successful open.
 			if (es.readyState === 2 || (!esOpened && esErrors >= 3)) {
+				clearProgressView();   // a dead stream must not freeze the wait line mid-turn
 				if (!esAuthProbed) { esAuthProbed = true; probeAuth(); }
 				return;
 			}
@@ -2296,6 +2368,8 @@ const PAGE_JS = `
 				var d = JSON.parse(e.data);
 				applyUpdate(d, true);
 				syncChatFromQa(d.qa);
+				// Late catch-up: the init frame carries the live snapshot (null = nothing in flight).
+				if (d.progress !== undefined) applyProgress(d.progress);
 			} catch (err) { /* ignore malformed frames */ }
 		});
 		es.addEventListener("closing", function () {
@@ -2344,6 +2418,15 @@ const PAGE_JS = `
 				toast(T.qaAnsweredToast);
 			} catch (err) { /* ignore malformed frames */ }
 		});
+		es.addEventListener("progress", function (e) {
+			try {
+				var d = JSON.parse(e.data);
+				if (!d || typeof d !== "object") return;
+				// A frame for another document must never paint this page (multi-doc isolation).
+				if (d.docId && DOC.docId && String(d.docId) !== String(DOC.docId)) return;
+				applyProgress(d);
+			} catch (err) { /* ignore malformed frames */ }
+		});
 	}
 
 	if (DOC.closeUrl && navigator.sendBeacon) {
@@ -2365,6 +2448,7 @@ const PAGE_JS = `
 	var contentEl = document.getElementById("content");
 	var qaRail = document.getElementById("qaRail");
 	var qaState = {};
+	var progState = null;   // latest progress frame of this document; null = no live progress
 	var qaStackTop = 0;
 	var pendingSubmit = null;
 
@@ -2628,13 +2712,16 @@ const PAGE_JS = `
 		var answered = !!entry.answerHtml;
 		var time = answered && entry.answeredAt ? fmtTime(entry.answeredAt) : "";
 		// "send" = the batch POST is still in flight, true = waiting for the reply.
-		var wait = entry.pending === "send" ? T.qaWaitingSend : (entry.pending ? T.qaPending : T.qaWaiting);
+		var sending = entry.pending === "send";
+		var wait = sending ? T.qaWaitingSend : progressLabel(T.qaWaiting);
+		var snippet = sending ? "" : progressSnippet();
 		return '<div class="qa-head"><span class="qa-badge">' + esc(T.qaBadge) + '</span><span class="qa-time">' + esc(time) + "</span></div>"
 			+ '<div class="qa-quote"><span class="qa-label">' + esc(T.qaLabelQuote) + "</span>" + esc(entry.quote) + "</div>"
 			+ '<div class="qa-q"><span class="qa-label">' + esc(T.qaLabelQuestion) + "</span>" + esc(entry.question) + "</div>"
 			+ (answered
 				? '<div class="qa-a">' + entry.answerHtml + '</div><button type="button" class="qa-more" hidden>' + esc(T.qaViewFull) + "</button>"
-				: '<div class="qa-wait"><span class="qa-pulse"></span>' + esc(wait) + "</div>");
+				: '<div class="qa-wait"><span class="qa-pulse"></span><span class="qa-wait-text">' + esc(wait) + "</span>"
+					+ '<span class="qa-prog-snippet"' + (snippet ? "" : " hidden") + ">" + esc(snippet) + "</span></div>");
 	}
 
 	function buildCard(id, entry) {
@@ -3302,6 +3389,54 @@ const PAGE_JS = `
 	var chatSend = document.getElementById("chatSend");
 	var chatState = {};   // id -> entry; the DOM lists turns newest-first, so ordering uses askedAt
 
+	// Stage line inside a pending wait row (M1). The server pushes one snapshot per flush; the
+	// frame never carries thinking text, tool arguments or the reply body.
+	function progressLabel(fallback) {
+		var p = progState;
+		if (!p) return fallback;
+		if (p.phase === "thinking") return T.progThinking;
+		if (p.phase === "tool") {
+			var name = p.tool ? String(p.tool) : "";
+			return name ? String(T.progToolName || "").replace("{tool}", name) : T.progTool;
+		}
+		if (p.phase === "writing") {
+			var n = Number(p.chars) || 0;
+			if (n <= 0) return T.progWriting;
+			return T.progWriting + " · " + String(T.progChars || "").replace("{n}", String(Math.floor(n)));
+		}
+		return fallback;   // unknown phase (server from another version): plain wait text
+	}
+
+	// Text tail of the writing phase; empty for every other phase.
+	function progressSnippet() {
+		return progState && progState.phase === "writing" ? String(progState.snippet || "") : "";
+	}
+
+	// Patch the wait line in place; rebuilding innerHTML per frame would drop the user's
+	// selection and re-measure the qa rail. The row stays single-line, so no re-layout.
+	function paintWaits(root, selector, fallback) {
+		if (!root) return;
+		var nodes = root.querySelectorAll(selector);
+		for (var i = 0; i < nodes.length; i++) {
+			var label = nodes[i].querySelector(".qa-wait-text");
+			if (!label) continue;   // card still building: leave it alone
+			label.textContent = progressLabel(fallback);
+			var snip = nodes[i].querySelector(".qa-prog-snippet");
+			if (!snip) continue;
+			var text = progressSnippet();
+			snip.textContent = text;
+			snip.hidden = !text;
+		}
+	}
+
+	function applyProgress(p) {
+		progState = p && p.phase && p.phase !== "idle" ? p : null;
+		paintWaits(qaRail, ".qa-card.pending", T.qaWaiting);
+		paintWaits(chatList, ".chat-turn.pending", T.chatWaiting);
+	}
+
+	function clearProgressView() { progState = null; applyProgress(null); }
+
 	// One turn = the user row plus the agent row, drawn as two full-width alternating rows.
 	// Every dynamic string except the pre-rendered *Html fields goes through esc().
 	function chatTurnInnerHtml(entry) {
@@ -3321,7 +3456,8 @@ const PAGE_JS = `
 			+ '<div class="chat-meta"><span class="chat-role agent" data-i18n="chatAgentLabel">' + esc(T.chatAgentLabel) + '</span><span class="chat-time">' + esc(answeredAt) + "</span></div>"
 			+ (answered
 				? '<div class="chat-body content">' + entry.answerHtml + "</div>"
-				: '<div class="chat-body"><div class="qa-wait"><span class="qa-pulse"></span>' + esc(T.chatWaiting) + "</div></div>")
+				: '<div class="chat-body"><div class="qa-wait"><span class="qa-pulse"></span><span class="qa-wait-text">' + esc(progressLabel(T.chatWaiting)) + "</span>"
+					+ '<span class="qa-prog-snippet"' + (progressSnippet() ? "" : " hidden") + ">" + esc(progressSnippet()) + "</span></div></div>")
 			+ "</div>";
 	}
 
@@ -3594,6 +3730,13 @@ const PAGE_JS = `
 		}
 		var sub = clone.querySelector(".doc-sub");
 		if (sub) sub.textContent = baseName(sub.textContent);
+		/* The snapshot is shareable: keep the workspace name, drop the absolute path. */
+		var cwdClone = clone.querySelector("#docCwd");
+		if (cwdClone) {
+			cwdClone.removeAttribute("title");
+			cwdClone.removeAttribute("aria-label");
+			cwdClone.removeAttribute("data-cwd");
+		}
 
 		/* 3) QA: keep answered cards as-is; turn waiting ones into a static note (dashed border kept, pulse removed) */
 		var waiting = clone.querySelectorAll(".qa-card.pending .qa-wait");
@@ -3714,11 +3857,28 @@ function icon(name: string): string {
 	return icons[name] ?? "";
 }
 
+// Last path segment of an absolute path, without importing node:path (page.ts stays
+// host-independent). A root such as "/" has no segment: fall back to the path itself.
+function cwdBase(p: string): string {
+	const unified = p.split("\\").join("/");
+	const parts = unified.split("/");
+	while (parts.length > 1 && !parts[parts.length - 1]) parts.pop();
+	const last = parts[parts.length - 1] ?? "";
+	return last || p;
+}
+
 export function renderPage(options: PageOptions): string {
-	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefLineHeight, prefBg, downloadUrl, prefsUrl, askUrl, askBatchUrl, reviseUrl, revision, chatUrl, mermaidUrl, qa, version } = options;
+	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefLineHeight, prefBg, downloadUrl, prefsUrl, askUrl, askBatchUrl, reviseUrl, revision, chatUrl, mermaidUrl, qa, version, sessionCwd } = options;
 	const lang = normalizeLang(options.lang);
 	const t = STRINGS[lang];
-	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, askBatchUrl: askBatchUrl ?? null, reviseUrl: reviseUrl ?? null, revision: revision ?? null, chatUrl: chatUrl ?? null, mermaidUrl: mermaidUrl ?? null, qa: qa ?? [], downloadUrl: downloadUrl ?? null, lang, i18n: STRINGS }).replace(/</g, "\\u003c");
+	const cwdPath = typeof sessionCwd === "string" && sessionCwd.trim() ? sessionCwd : "";
+	const cwdName = cwdPath ? cwdBase(cwdPath) : "";
+	// Every value that reaches an attribute goes through escapeHtml: a directory name may
+	// contain quotes or angle brackets.
+	const cwdAttrs = cwdPath
+		? ` title="${escapeHtml(cwdPath)}" aria-label="${escapeHtml(`${t.cwdBadge}: ${cwdPath}`)}" data-cwd="${escapeHtml(cwdPath)}"`
+		: " hidden";
+	const docState = JSON.stringify({ docId, toc, updateUrl, closeUrl, prefsUrl, askUrl, askBatchUrl: askBatchUrl ?? null, reviseUrl: reviseUrl ?? null, revision: revision ?? null, chatUrl: chatUrl ?? null, mermaidUrl: mermaidUrl ?? null, qa: qa ?? [], downloadUrl: downloadUrl ?? null, sessionCwd: sessionCwd ?? null, lang, i18n: STRINGS }).replace(/</g, "\\u003c");
 	const hintAttr = themeHint ? ` data-theme-hint="${escapeHtml(themeHint)}"` : "";
 	const scaleAttr = typeof prefScale === "number" && isFinite(prefScale) ? ` data-pref-scale="${prefScale}"` : "";
 	const lineHeightAttr = typeof prefLineHeight === "number" && isFinite(prefLineHeight) ? ` data-pref-line-height="${prefLineHeight}"` : "";
@@ -3744,7 +3904,11 @@ ${THEME_BOOT}
 			<div class="brand-mark">${icon("logo")}</div>
 			<div class="brand-text">
 				<div class="doc-title" id="docTitle">${escapeHtml(title)}</div>
-				<div class="doc-sub">${escapeHtml(subtitle)}</div>
+				<div class="doc-meta">
+					<span class="doc-cwd" id="docCwd"${cwdAttrs}><span class="doc-cwd-label" data-i18n="cwdBadge">${escapeHtml(t.cwdBadge)}</span><span class="doc-cwd-name">${escapeHtml(cwdName)}</span></span>
+					<span class="doc-meta-sep" aria-hidden="true">&middot;</span>
+					<div class="doc-sub">${escapeHtml(subtitle)}</div>
+				</div>
 			</div>
 		</div>
 		<div class="controls">

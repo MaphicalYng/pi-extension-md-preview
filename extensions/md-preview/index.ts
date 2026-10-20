@@ -20,8 +20,10 @@ import {
 	envBindHost,
 	MAX_HIGHLIGHTS,
 	MAX_HIGHLIGHT_LEN,
+	PROGRESS_SNIPPET_MAX,
 	type AskBatchNotice,
 	type AskNotice,
+	type ProgressPatch,
 	type QaEntry,
 	type RevisionNotice,
 } from "./server";
@@ -371,6 +373,18 @@ function liveServer() {
 	return server && server.isOpen ? server : null;
 }
 
+/** Tools of this extension: their execution is the answer pipeline itself, not work to report. */
+const SELF_TOOLS = new Set(["md_preview", "md_preview_reply", "md_preview_revision_done"]);
+
+/**
+ * Push one progress sample to the preview server: a no-op when no preview is running. Never
+ * calls `ensureServer()` — reporting progress must not start a server (or a browser tab).
+ * Progress is document-level: the server drops patches for documents without a pending entry.
+ */
+function publishProgress(patch: ProgressPatch): void {
+	currentServer()?.publishProgress(patch);
+}
+
 /** Shared by the `md_preview` tool and the `/md-preview` command. */
 async function previewMarkdown(
 	file: string,
@@ -665,6 +679,34 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 	pi.registerTool(mdPreviewReplyTool);
 	pi.registerTool(mdPreviewRevisionDoneTool);
 
+	// ---- live Q&A progress (M1) ----
+	// Every handler is synchronous, must not throw, and is a no-op unless a preview document
+	// still has an unanswered entry: PreviewServer drops patches for documents without one.
+	pi.on("agent_start", () => publishProgress({ phase: "thinking" }));
+	pi.on("agent_end", () => currentServer()?.clearProgress());
+	pi.on("turn_start", () => publishProgress({ phase: "thinking" }));
+	pi.on("tool_execution_start", (event) => {
+		if (SELF_TOOLS.has(event.toolName)) return;
+		publishProgress({ phase: "tool", tool: event.toolName });
+	});
+	pi.on("tool_execution_end", (event) => {
+		if (SELF_TOOLS.has(event.toolName)) return;
+		publishProgress({ phase: "thinking" });
+	});
+	pi.on("message_update", (event) => {
+		const update = event.assistantMessageEvent;
+		if (update.type === "thinking_start" || update.type === "thinking_delta") {
+			// Chain of thought is never forwarded: only the phase reaches the browser.
+			publishProgress({ phase: "thinking" });
+			return;
+		}
+		if (update.type === "text_start" || update.type === "text_delta" || update.type === "text_end") {
+			const stats = textStats(event.message);
+			publishProgress({ phase: "writing", chars: stats?.chars ?? 0, snippet: stats?.tail ?? "" });
+		}
+		// toolcall_* carries no tool name worth showing: tool_execution_start reports it.
+	});
+
 	pi.registerCommand("md-preview", {
 		description: "Render and preview a Markdown file in the web UI: /md-preview <file path> [--host <ip>]",
 		getArgumentCompletions: completeMarkdownFiles,
@@ -778,6 +820,30 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 	// Safety net: never leak the preview server past the session. The server also
 	// self-exits shortly after the user closes the browser tab.
 	pi.on("session_shutdown", (event) => {
+		// shutdown() also drops the progress timer and every live progress snapshot.
 		void currentServer()?.shutdown(`pi session ended (${event.reason})`);
 	});
+}
+
+/** Structural guard: `AgentMessage` is a union with custom messages, so role narrowing alone does not converge. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+/** Characters + text tail of an assistant message; null for every other message kind. */
+function textStats(message: unknown): { chars: number; tail: string } | null {
+	if (!isRecord(message) || message["role"] !== "assistant") return null;
+	const blocks = message["content"];
+	if (!Array.isArray(blocks)) return null;
+	const list: readonly unknown[] = blocks; // erase the any[] that Array.isArray narrows to
+	let chars = 0;
+	let tail = "";
+	for (const block of list) {
+		if (!isRecord(block) || block["type"] !== "text") continue;
+		const text = block["text"];
+		if (typeof text !== "string") continue;
+		chars += text.length;
+		tail = text;
+	}
+	return { chars, tail: tail.replace(/\s+/g, " ").trim().slice(-PROGRESS_SNIPPET_MAX) };
 }
