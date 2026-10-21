@@ -182,6 +182,71 @@ if (smoke) {
 	if (!html.includes('class="admonition admonition-note"')) failures.push("页面缺少 NOTE 提示框");
 	if (!html.includes('class="footnote-ref"') || !html.includes('class="footnotes"')) failures.push("页面缺少脚注结构");
 
+	// 卡片布局契约：正文与目录各是一张 12px 圆角卡片、列间距 32px，导出快照与印刷各自扁平化。
+	const cssText = (html.match(/<style>([\s\S]*?)<\/style>/) || [null, ""])[1];
+	/*
+	 * 基础规则都在样式表前部、媒体查询在后面，因此只在第一个 @media 之前找规则；
+	 * 选择器列表按逗号拆成独立项精确比对（`.content, .toc { }` 里的声明对两者都生效），
+	 * 同名规则的花括号内容合并后返回。注释先剔除，否则会被并进后一条规则的选择器里。
+	 */
+	const cssRule = (sel) => {
+		const clean = cssText.replace(/\/\*[\s\S]*?\*\//g, "");
+		const mediaAt = clean.indexOf("@media");
+		const baseline = mediaAt < 0 ? clean : clean.slice(0, mediaAt);
+		const bodies = [];
+		for (const m of baseline.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+			const list = m[1].split(",").map((s) => s.replace(/\s+/g, " ").trim());
+			if (list.includes(sel)) bodies.push(m[2]);
+		}
+		return bodies.join("\n");
+	};
+	const baseLayout = cssRule(".layout");
+	if (!/gap:\s*32px/.test(baseLayout)) failures.push("卡片列间距不是 32px（.layout gap）");
+	if (!/grid-template-columns:\s*minmax\(0, 780px\) 236px/.test(baseLayout)) failures.push(".layout 首列未锁定 780px（会产生超大空隙）");
+	if (!/max-width:\s*1096px/.test(baseLayout)) failures.push(".layout 宽度不是 1096px（24+780+32+236+24）");
+	for (const sel of [".content", ".toc"]) {
+		const rule = cssRule(sel);
+		for (const decl of [
+			"background: var(--card-bg)",
+			"border: var(--card-border)",
+			"border-radius: var(--card-radius)",
+			"box-shadow: var(--card-shadow)",
+		]) {
+			if (!rule.includes(decl)) failures.push(`${sel} 缺少卡片声明：${decl}`);
+		}
+		if (!/padding:\s*var\(--(card|toc)-pad\)/.test(rule)) failures.push(`${sel} 缺少卡片内边距（var(--card-pad)/var(--toc-pad)）`);
+	}
+	for (const [decl, msg] of [
+		["--card-radius: 12px", "卡片圆角不是 12px"],
+		["--card-bg: var(--bg-elev)", "卡片底色未使用 --bg-elev"],
+		["--card-shadow: var(--shadow-1)", "卡片阴影未使用 --shadow-1"],
+	]) {
+		if (!cssText.includes(decl)) failures.push(msg);
+	}
+	const flatAt = cssText.indexOf("html[data-export] .content");
+	if (flatAt < 0) failures.push("导出快照缺少卡片扁平化规则（html[data-export]）");
+	else {
+		const flat = cssText.slice(flatAt, flatAt + 400);
+		for (const decl of ["--card-bg: transparent", "--card-border: 0", "--card-shadow: none", "--card-pad: 0"]) {
+			if (!flat.includes(decl)) failures.push("导出扁平化缺少：" + decl);
+		}
+	}
+	const printCss = cssText.slice(cssText.indexOf("@media print"));
+	if (!printCss.includes("--card-shadow: none")) failures.push("印刷样式未扁平化卡片（@media print）");
+	// Q&A rail 与正文卡片的间距：32px 且不再残留 16px 字面量
+	if (!html.includes("QA_RAIL_GAP = 32")) failures.push("QA rail 间距常量不是 32px");
+	if (!html.includes("contentRect.left - QA_RAIL_GAP")) failures.push("QA rail 仍在使用硬编码间距");
+	if (html.includes("contentRect.left - 16")) failures.push("QA rail 残留旧的 16px 间距");
+	// Agent 卡片与正文卡片分离：.chat 也是独立卡片，间距与卡片间距一致，圆角统一到 12px
+	const chatCss = cssRule(".chat");
+	if (!/margin-top:\s*32px/.test(chatCss)) failures.push(".chat 与正文卡片的间距不是 32px");
+	if (!/border-radius:\s*12px/.test(chatCss)) failures.push(".chat 圆角未对齐 12px");
+	const qaCardCss = cssRule(".qa-card");
+	if (!/border-radius:\s*12px/.test(qaCardCss)) failures.push(".qa-card 圆角未对齐 12px");
+	// 白色纸面下 --bg 与 --bg-elev 同色，卡片靠加强阴影维持层次
+	if (!cssText.includes(':root[data-theme="light"][data-bg="white"] .content')) failures.push("缺少 white 预设下的卡片阴影加强规则");
+	else if (!cssText.includes("0 4px 14px rgba(16, 24, 40, 0.08)")) failures.push("white 预设的卡片阴影值不符合预期");
+
 	// 端点注入：批量问答/批量修订 URL 必须非 null（页面据 docState.askBatchUrl / reviseUrl 决定是否显示
 	// 问答/修订队列按钮与选中浮层的「修订」入口；为 null 时整套功能在真实页面上不可达）。
 	if (!html.includes("/ask-batch")) failures.push("页面未注入批量提问端点（/ask-batch）");

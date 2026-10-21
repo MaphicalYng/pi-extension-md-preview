@@ -530,20 +530,66 @@ body {
 /* ---------- layout ---------- */
 
 .layout {
-	max-width: 1240px;
+	/* 780 + 32 + 236 + 24*2 = 1096: the grid columns are sized so the two cards
+	   keep exactly one 32px gutter, with no leftover track width to widen it. */
+	max-width: 1096px;
 	margin: 0 auto;
 	padding: 40px 24px 120px;
 	position: relative;
 	display: grid;
-	grid-template-columns: minmax(0, 1fr) 236px;
-	gap: 56px;
+	grid-template-columns: minmax(0, 780px) 236px;
+	justify-content: center;
+	gap: 32px;
 	align-items: start;
 }
 
 .article {
-	max-width: 780px;
+	/* Column only: the visible card is .content, so the chat + footer stay outside it. */
 	min-width: 0;
 	animation: rise 0.5s var(--ease) both;
+}
+
+/* ---------- card surface (article body + toc) ----------
+   One token set keeps the two columns identical, and lets the export/print paths
+   flatten both cards by resetting four custom properties. */
+
+.content, .toc {
+	--card-bg: var(--bg-elev);
+	--card-border: 1px solid var(--border);
+	--card-shadow: var(--shadow-1);
+	--card-radius: 12px;
+	background: var(--card-bg);
+	border: var(--card-border);
+	border-radius: var(--card-radius);
+	box-shadow: var(--card-shadow);
+}
+
+/* The white paper preset erases the body/card tonal step (bg and bg-elev are the same
+   colour), so on that preset the card leans on a stronger shadow to stay a card. */
+:root[data-theme="light"][data-bg="white"] .content,
+:root[data-theme="light"][data-bg="white"] .toc {
+	--card-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 4px 14px rgba(16, 24, 40, 0.08);
+}
+
+.content {
+	--card-pad: 32px 36px;
+	padding: var(--card-pad);
+}
+
+.toc {
+	--toc-pad: 16px 18px;
+	padding: var(--toc-pad);
+}
+
+/* The saved snapshot is content: drop the card chrome the shell needs on screen. */
+html[data-export] .content,
+html[data-export] .toc {
+	--card-bg: transparent;
+	--card-border: 0;
+	--card-shadow: none;
+	--card-radius: 0;
+	--card-pad: 0;
+	--toc-pad: 0;
 }
 
 @keyframes rise {
@@ -845,12 +891,25 @@ body {
 
 .toc {
 	position: sticky;
-	top: calc(var(--topbar-h) + 32px);
-	max-height: calc(100vh - var(--topbar-h) - 64px);
+	top: calc(var(--topbar-h) + 32px);          /* unchanged: 32 == card gap, reads as one rhythm */
+	max-height: calc(100vh - var(--topbar-h) - 64px);  /* border-box: padding is inside, nothing clips */
 	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-width: thin;                       /* Firefox */
+	scrollbar-color: var(--border) transparent;
 	font-size: 0.82rem;
 	animation: rise 0.55s var(--ease) both;
 }
+/* WebKit: hairline thumb inset by a transparent border so it floats inside the rounded card */
+.toc::-webkit-scrollbar { width: 8px; }
+.toc::-webkit-scrollbar-track { background: transparent; }
+.toc::-webkit-scrollbar-thumb {
+	background: var(--border);
+	border: 2px solid transparent;
+	background-clip: content-box;
+	border-radius: 999px;
+}
+.toc::-webkit-scrollbar-thumb:hover { background: var(--text-3); background-clip: content-box; }
 .toc.hidden { display: none; }
 .toc-title {
 	font-size: 0.72rem;
@@ -951,6 +1010,10 @@ body {
 	pointer-events: auto;
 }
 .qa-card.pending { border-style: dashed; box-shadow: none; }
+/* Squeezed windows: the rail overlays the card on purpose, so lift it visually.
+   Alternatives left out on purpose: hiding the rail below ~1696px loses every answer, and
+   narrowing the article column while QA is present makes the text reflow on the first card. */
+.layout.qa-tight .qa-card { box-shadow: var(--shadow-2); }
 .qa-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
 .qa-badge { font-size: 0.75rem; font-weight: 650; color: var(--accent); background: var(--accent-soft); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
 .qa-time { font-size: 0.75rem; color: var(--text-3); white-space: nowrap; }
@@ -1254,9 +1317,9 @@ body {
 /* ---------- document chat (bottom conversation) ---------- */
 
 .chat {
-	margin-top: 48px;
+	margin-top: 32px;
 	border: 1px solid var(--border);
-	border-radius: 14px;
+	border-radius: 12px;
 	background: var(--bg-elev);
 	padding: 16px 18px;
 }
@@ -1355,6 +1418,8 @@ body {
 	.layout { grid-template-columns: minmax(0, 1fr); gap: 0; padding-top: 28px; }
 	.toc { display: none; }
 	.article { max-width: 100%; }
+	/* Single column and full width: trim the card padding so the text is not pinched. */
+	.content { padding: 28px 24px; }
 	.layout.with-qa .qa-rail { display: none; }
 	/* Queue buttons drop their label: icon + badge keep a 32px tap target. */
 	.qbtn { min-width: 32px; padding: 0 7px; justify-content: center; }
@@ -1368,6 +1433,8 @@ body {
 	.doc-cwd { max-width: 62%; }
 	.doc-cwd-label { display: none; }
 	.content h1 { font-size: 1.72em; }
+	/* Small screens: the card padding matches the layout gutter so no double inset. */
+	.content { padding: 20px 16px; }
 	.heading-anchor { display: none; }
 	.to-top { right: 16px; bottom: 16px; }
 	.chat { padding: 14px; }
@@ -1404,6 +1471,8 @@ body {
 	.progress, .topbar, .toc, .to-top, .toast, .copy-btn, .heading-anchor, .qa-rail, .qa-sel-btn, .qa-panel, .chat-input { display: none !important; }
 	body { background: #fff; color: #000; }
 	.layout { display: block; padding: 0; }
+	.content, .toc { --card-bg: transparent; --card-border: 0; --card-shadow: none; --card-radius: 0; --card-pad: 0; --toc-pad: 0; }
+	.chat { border: 0; padding: 0; background: none; }
 	.code-block { break-inside: avoid; }
 	.qa-sel-bar, .queue-group, .rev-toast, .sr-only { display: none !important; }
 	.rev-flash { background: none !important; box-shadow: none !important; }
@@ -2919,18 +2988,22 @@ const PAGE_JS = `
 		// (e.g. setScale during font-size init); bail out instead of throwing a TypeError
 		// that would abort the whole IIFE.
 		if (!qaRail || !contentEl) return;
-		// The rail's right edge stops 16px left of the article; cards stretch left into the
-		// empty viewport area (capped at 560px). In narrow windows the rail stays at least
-		// 280px wide: covering the article's left edge beats leaving the viewport.
+		// The rail's right edge stops QA_RAIL_GAP left of the article card; cards stretch
+		// left into the viewport margin (capped at 560px). In narrow windows the rail keeps
+		// at least QA_RAIL_MIN width and the layout is tagged qa-tight so the cards can fall
+		// back to a deliberately floating treatment instead of silently colliding.
 		// Recalculated by this function on resize.
+		var QA_RAIL_GAP = 32;    // breathing room between the rail and the article card
+		var QA_RAIL_MIN = 280;   // classic floor: below this the rail would overlap the card
+		var QA_RAIL_EDGE = 12;   // never closer than this to the viewport's left edge
 		var layoutRect = layoutEl.getBoundingClientRect();
 		var contentRect = contentEl.getBoundingClientRect();
-		var railRight = contentRect.left - 16;                 // viewport x of the rail's right edge (16px gap to the article)
-		var width = Math.round(Math.min(Math.max(railRight, 280), 560));
-		var left = railRight - width - layoutRect.left;        // convert to an offset from the layout's left border
-		left = Math.max(left, 12 - layoutRect.left);           // never leave the viewport's left edge by less than 12px
+		var railRight = contentRect.left - QA_RAIL_GAP;
+		var avail = railRight - QA_RAIL_EDGE;              // widest rail that still fits inside the viewport
+		var width = Math.round(Math.min(Math.max(avail, QA_RAIL_MIN), 560));
+		layoutEl.classList.toggle("qa-tight", avail < QA_RAIL_MIN);
 		qaRail.style.width = width + "px";
-		qaRail.style.left = left + "px";
+		qaRail.style.left = Math.max(railRight - width - layoutRect.left, QA_RAIL_EDGE - layoutRect.left) + "px";
 		qaStackTop = 0;
 		var cards = qaRail.children;
 		for (var i = 0; i < cards.length; i++) {
@@ -3808,6 +3881,8 @@ const PAGE_JS = `
 		clone.style.setProperty("--line-height", String(lineHeight));
 		// Freeze the effective language (including an in-page switch) into the snapshot.
 		clone.setAttribute("data-export-i18n", JSON.stringify(T));
+		// The snapshot is a document, not an app shell: flatten the article/toc cards.
+		clone.setAttribute("data-export", "1");
 
 		/* 2) Strip scripts and online interactions (entries that would surely fail or be wrong offline) */
 		var scripts = clone.querySelectorAll("script");
@@ -3858,6 +3933,10 @@ const PAGE_JS = `
 			var layoutClone = clone.querySelector("#layout");
 			if (layoutClone) layoutClone.classList.remove("with-qa");
 		}
+		// Layout-state tags are runtime-only: never freeze the squeezed-window decoration
+		// (a qa-tight snapshot would carry a lifted shadow that means nothing offline).
+		var snapLayout = clone.querySelector("#layout");
+		if (snapLayout) snapLayout.classList.remove("qa-tight");
 
 		/* 3b) Chat: an empty conversation leaves no trace; waiting turns become static notes */
 		var chatClone = clone.querySelector("#chat");
