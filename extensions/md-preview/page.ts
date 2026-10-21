@@ -334,9 +334,8 @@ body {
 .topbar.scrolled { border-bottom-color: var(--border); box-shadow: var(--shadow-1); }
 
 .topbar-inner {
-	max-width: 1240px;
+	width: 100%;
 	height: 100%;
-	margin: 0 auto;
 	padding: 0 24px;
 	display: flex;
 	align-items: center;
