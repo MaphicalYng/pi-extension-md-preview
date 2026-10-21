@@ -120,7 +120,7 @@ Agent 写 .md ──► md_preview 工具 ──► 本地预览服务（127.0.0
 ```
 
 - **进程生命周期**：服务按需惰性启动（首次调用工具 / 命令时），不阻塞工具返回；退出判定在每 3 秒的轻量巡检中完成，无外部依赖。
-- **选中提问链路**：页面提交 `POST /doc/{id}/ask` → 服务端落库并 SSE 广播 `ask` → 扩展经 `pi.sendUserMessage`（`deliverAs: "followUp"`）把提问注入会话；Agent 阅读相关文件后调用 `md_preview_reply` 工具 → 服务端渲染 Markdown 并 SSE 广播 `answer` → 所有打开该文档的标签页左侧出现回复卡片，原文橙色高亮。
+- **选中提问链路**：页面提交 `POST /doc/{id}/ask` → 服务端落库并 SSE 广播 `ask` → 扩展经 `pi.sendUserMessage`（`deliverAs` 取自页面的投递方式偏好：默认 `followUp`，选 Steering 则为 `steer`）把提问注入会话；Agent 阅读相关文件后调用 `md_preview_reply` 工具 → 服务端渲染 Markdown 并 SSE 广播 `answer` → 所有打开该文档的标签页左侧出现回复卡片，原文橙色高亮。
 - **批量链路**：暂存队列以一次请求送出——`POST /doc/{id}/ask-batch` 或 `POST /doc/{id}/revise`（与其他路由一样需 token 鉴权）——扩展按批只唤醒 Agent 一次（`onAsk` / `onRevise`），不再逐条唤醒。提问批拆成每条一条问答记录，各自用自己的 `question_id` 调 `md_preview_reply`，卡片逐张填充；修订批不产生任何问答记录——文件就是交付物，`md_preview_revision_done` 是收尾步骤，负责推送新 HTML 并广播会淡出的高亮标记。每篇文档只保留最新一批（更早且未完成的批次会被取代）。
 - **跨标签页去重**：同一文件多标签页共享一个文档渲染；源文件修改后所有标签页一起刷新。
 - **UI 语言**：`md_preview` 工具要求显式传 `ui_lang`（`"en"` 或 `"zh"`），由 Agent 根据用户语言选定；`/md-preview` 命令则按 `MD_PREVIEW_LANG` 环境变量 > `"en"` 解析（文档首次打开时确定）。页面内的 中/EN 切换控件优先级高于服务端下发值，并按浏览器源记忆在 `localStorage`（`mdp.lang`）。语言刻意**不**写入用户级偏好文件。
@@ -222,7 +222,7 @@ MD_PREVIEW_BIND=0.0.0.0 pi
 
 ### 选中文字向 Agent 提问
 
-阅读时选中任意正文，点浮动「✦ 提问」按钮输入问题（Enter 发送）。服务端创建问答记录并广播 SSE `ask` 事件，扩展随即把提问以用户消息形式注入 pi 会话（`deliverAs: "followUp"`：空闲立即唤起，忙碌排队到当前回合结束）。Agent 结合仓库里的相关文件作答后，调用 `md_preview_reply` 工具：
+阅读时选中任意正文，点浮动「✦ 提问」按钮输入问题（Enter 发送）。服务端创建问答记录并广播 SSE `ask` 事件，扩展随即把提问以用户消息形式注入 pi 会话（`deliverAs` 跟随页面的投递方式偏好：默认 `followUp`，空闲立即唤起、忙碌排队到当前回合结束；选 Steering 则在当前工具批次结束后注入）。Agent 结合仓库里的相关文件作答后，调用 `md_preview_reply` 工具：
 
 ```jsonc
 // 工具调用（question_id 省略时回复最早未回复的提问）
