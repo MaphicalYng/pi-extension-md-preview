@@ -28,7 +28,7 @@ import {
 	type RevisionNotice,
 } from "./server";
 import { openBrowser } from "./browser";
-import { loadPrefs, savePrefs, prefsFilePath, browserHostError, pickBrowserHost, type UiLang } from "./prefs";
+import { loadPrefs, loadPrefsLive, savePrefs, prefsFilePath, browserHostError, pickBrowserHost, resolveMessageMode, type MessageMode, type UiLang } from "./prefs";
 
 type Notify = (message: string, type?: "info" | "warning" | "error") => void;
 
@@ -43,8 +43,13 @@ function notifySafely(notify: Notify | undefined, message: string, type?: "info"
 
 /**
  * Session messenger injected by the extension factory; it delivers a preview-page
- * question into the pi session. A follow-up is delivered immediately when the
- * agent is idle, and queued to wake a turn after the current one when it is busy.
+ * message (question, chat message or revision request) into the pi session.
+ *
+ * Two delivery modes, chosen per call from the `messageMode` preference:
+ *  - `followUp` (default): queued as a follow-up message; delivered immediately when the
+ *    agent is idle, or after the current turn when it is busy.
+ *  - `steer`: injected mid-turn, right after a tool batch, so it can redirect work that is
+ *    still running. Nothing is cancelled: whatever the turn was doing continues afterwards.
  */
 let sessionMessenger: ((text: string) => void) | null = null;
 
@@ -68,6 +73,61 @@ function fenceSafe(text: string): string {
 function clip(text: string, max: number): string {
 	const s = (text ?? "").trim();
 	return s.length > max ? `${s.slice(0, max)}…[truncated: ${s.length - max} chars omitted]` : s;
+}
+
+/** The sending capability this module needs (structurally the way the host send call is shaped). */
+type SendUserMessage = (text: string, options?: { deliverAs?: MessageMode }) => void;
+
+/**
+ * Handling convention appended in steering mode. A steered message lands in the middle of a turn,
+ * right after a tool batch, so the model sees a half-finished round of work: it has to know that
+ * this message is an interception rather than a new task, that the unfinished work still stands,
+ * that it must not start a turn of its own, and that pausing to ask is allowed.
+ *
+ * followUp appends nothing - that path stays byte-for-byte what it was before this feature.
+ */
+const STEER_CONVENTION = [
+	"[Steering delivery] This message arrived mid-turn, right after a tool batch, not as a new task.",
+	"- After handling this message, continue the work you had not finished.",
+	"- If the turn had already ended, do not start another turn on your own.",
+	"- If this message changed the direction of the work and a decision is needed, feel free to pause and ask.",
+].join("\n");
+
+/** The text actually injected for a mode: steering adds its convention after a blank line. */
+function composeMessage(text: string, mode: MessageMode): string {
+	return mode === "steer" ? `${text}\n\n${STEER_CONVENTION}` : text;
+}
+
+/** One delivery attempt; deliverAs === null means "call without options" (older hosts). */
+function trySend(send: SendUserMessage, text: string, deliverAs: MessageMode | null): boolean {
+	try {
+		if (deliverAs) send(text, { deliverAs });
+		else send(text);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Build the preview-page messenger. The mode is read from prefs on **every** call (including a patch
+ * still inside the debounce window), so switching the mode and asking straight away takes effect
+ * immediately - there is no cached value captured at creation time.
+ *
+ * `send` is injected by the factory (in production: the host's own send function).
+ */
+export function createSessionMessenger(send: SendUserMessage): (text: string) => void {
+	return (text) => {
+		const mode = resolveMessageMode(loadPrefsLive());
+		if (trySend(send, composeMessage(text, mode), mode)) return;
+		// Degraded delivery: the host does not support options, or the steering queue is unavailable.
+		// A steered text must never be delivered as followUp with the steering convention still attached -
+		// that would tell the model it is an interception while it is really a queued turn - so the
+		// fallback sends the original text unchanged.
+		if (mode === "steer" && trySend(send, text, "followUp")) return;
+		// Last resort: a bare call keeps the message from being dropped (and matches the pre-upgrade path).
+		trySend(send, text, null);
+	};
 }
 
 /** Format a preview-page question as a user message injected into the pi session. */
@@ -664,17 +724,7 @@ function parseHostCmdArgs(raw: string): HostCmdArgs {
 }
 
 export default function mdPreviewExtension(pi: ExtensionAPI) {
-	sessionMessenger = (text) => {
-		try {
-			pi.sendUserMessage(text, { deliverAs: "followUp" });
-		} catch {
-			try {
-				pi.sendUserMessage(text);
-			} catch {
-				/* session busy and queueing unsupported: the question stays pending on the preview page */
-			}
-		}
-	};
+	sessionMessenger = createSessionMessenger((text, options) => pi.sendUserMessage(text, options));
 	pi.registerTool(mdPreviewTool);
 	pi.registerTool(mdPreviewReplyTool);
 	pi.registerTool(mdPreviewRevisionDoneTool);

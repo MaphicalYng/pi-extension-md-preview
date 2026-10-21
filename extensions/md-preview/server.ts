@@ -15,7 +15,7 @@ import * as crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { renderMarkdown, escapeHtml, type RenderedDoc, type TocItem } from "./render";
 import { renderPage } from "./page";
-import { loadPrefs, savePrefsDebounced, normalizeTheme, normalizeBg, clampScale, clampLineHeight, resolveUiLang, type ThemePref, type BgPref, type UiLang } from "./prefs";
+import { loadPrefsLive, savePrefsDebounced, normalizeTheme, normalizeBg, normalizeMessageMode, clampScale, clampLineHeight, resolveUiLang, resolveMessageMode, type ThemePref, type BgPref, type MessageMode, type UiLang } from "./prefs";
 
 const IDLE_MS = 8_000; // shutdown this long after the last tab goes away
 const NEVER_OPENED_MS = 5 * 60_000; // shutdown if nobody ever opened a tab
@@ -340,6 +340,11 @@ type RenderPageArgs = Parameters<typeof renderPage>[0] & {
 	mermaidUrl?: string;
 	/** Completed revision batch the page replays its highlights from; null/undefined = nothing to mark. */
 	revision?: RevisionState | null;
+	/**
+	 * Current value of the page's delivery-mode selector. Always a concrete value: when the
+	 * preference is unset the server passes "followUp", so the page never has to guess.
+	 */
+	prefMessageMode?: MessageMode;
 };
 
 export class PreviewServer {
@@ -1154,7 +1159,9 @@ export class PreviewServer {
 		const cid = `c${++this.connSeq}`;
 		// User-level persisted prefs win over the MD_PREVIEW_THEME env hint;
 		// with neither set the page falls back to following the OS theme.
-		const prefs = loadPrefs();
+		// loadPrefsLive() rather than loadPrefs(): a tab opened right after a preference write (the
+		// 200ms debounce window) must render the new value, not the one still on disk.
+		const prefs = loadPrefsLive();
 		const env = process.env.MD_PREVIEW_THEME;
 		const themeHint = prefs.theme ?? (env === "light" || env === "dark" || env === "system" ? env : undefined);
 		const args: RenderPageArgs = {
@@ -1177,6 +1184,7 @@ export class PreviewServer {
 			prefScale: prefs.scale,
 			prefLineHeight: prefs.lineHeight,
 			prefBg: prefs.bg,
+			prefMessageMode: resolveMessageMode(prefs),
 			prefsUrl: this.withToken("/prefs"),
 			downloadUrl: this.withToken(`/doc/${doc.id}/download`),
 			mermaidUrl: this.withToken("/mermaid.mjs"),
@@ -1446,7 +1454,9 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 
 	/** Current user-level preferences (for debugging / page self-checks). */
 	private servePrefs(res: http.ServerResponse): void {
-		const prefs = loadPrefs();
+		// Whole prefs object, so `messageMode` rides along with no extra plumbing. Live view: a GET
+		// right after a POST /prefs must read back what that POST just accepted, not the pre-debounce file.
+		const prefs = loadPrefsLive();
 		res.statusCode = 200;
 		res.setHeader("Content-Type", "application/json; charset=utf-8");
 		res.setHeader("Cache-Control", "no-store");
@@ -1454,8 +1464,8 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 	}
 
 	/**
-	 * Reported by the page whenever theme / font size / line height change; merged
-	 * into the user-level prefs file. Invalid fields are ignored instead of
+	 * Reported by the page whenever theme / font size / line height / delivery mode change;
+	 * merged into the user-level prefs file. Invalid fields are ignored instead of
 	 * erroring out — the client clamps values, this is only a safety net.
 	 */
 	private async serveSavePrefs(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -1466,7 +1476,13 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 		} catch {
 			/* an empty or non-JSON body counts as "no patch" */
 		}
-		const patch: { theme?: ThemePref | null; bg?: BgPref | null; scale?: number | null; lineHeight?: number | null } = {};
+		const patch: {
+			theme?: ThemePref | null;
+			bg?: BgPref | null;
+			scale?: number | null;
+			lineHeight?: number | null;
+			messageMode?: MessageMode | null;
+		} = {};
 		if (parsed && typeof parsed === "object") {
 			const obj = parsed as Record<string, unknown>;
 			// Invalid values are ignored; an explicit null resets to the default.
@@ -1485,6 +1501,12 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 			if (obj.lineHeight !== undefined) {
 				const lineHeight = clampLineHeight(obj.lineHeight);
 				if (lineHeight !== null || obj.lineHeight === null) patch.lineHeight = lineHeight;
+			}
+			if (obj.messageMode !== undefined) {
+				// Unlike theme, an unrecognised value is not "no opinion": it cannot be a delivery mode,
+				// so it collapses to null (unset = followUp), exactly like an explicit null. This keeps the
+				// endpoint's answer honest - the caller always gets a value it can render as selected.
+				patch.messageMode = normalizeMessageMode(obj.messageMode);
 			}
 		}
 		const prefs = savePrefsDebounced(patch);

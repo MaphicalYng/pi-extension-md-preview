@@ -65,6 +65,13 @@ export interface PageStrings {
 	langEn: string;
 	langZh: string;
 
+	// ---- topbar: message delivery mode ----
+	modeLabel: string;
+	modeFollowUp: string;
+	modeSteer: string;
+	modeHintFollowUp: string;
+	modeHintSteer: string;
+
 	// ---- footer / toc ----
 	versionPrefix: string;
 	footerNote: string;
@@ -200,6 +207,12 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		langEn: "EN",
 		langZh: "中",
 
+		modeLabel: "Message delivery",
+		modeFollowUp: "Follow up",
+		modeSteer: "Steering",
+		modeHintFollowUp: "Waits until this turn finishes, then delivers as a new turn.",
+		modeHintSteer: "Injected after the current tool batch; can redirect mid-turn, never aborts.",
+
 		versionPrefix: "Version ",
 		footerNote: "Rendered live from the source file; closing this page shuts down the preview server",
 		tocTitle: "Contents",
@@ -321,6 +334,12 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		groupLang: "界面语言",
 		langEn: "EN",
 		langZh: "中",
+
+		modeLabel: "消息投递方式",
+		modeFollowUp: "Follow up",
+		modeSteer: "Steering",
+		modeHintFollowUp: "等本轮全部完成后才投递，视为一条新的用户消息。",
+		modeHintSteer: "当前工具批次结束后注入，可中途纠偏，但不会打断或中止本轮。",
 
 		versionPrefix: "版本 ",
 		footerNote: "内容实时渲染自源文件，关闭本页面后预览服务自动退出",

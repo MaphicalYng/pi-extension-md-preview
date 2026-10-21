@@ -12,8 +12,13 @@
  *
  * `browserHost` is the one key that is user-level only: it has no localStorage
  * counterpart and the preview page cannot write it (the /prefs endpoint accepts
- * theme / bg / scale / lineHeight only). It is set with the /md-preview-host
- * command and read at every preview call, so it applies across pi instances.
+ * theme / bg / scale / lineHeight / messageMode only). It is set with the
+ * /md-preview-host command and read at every preview call, so it applies across
+ * pi instances.
+ *
+ * `messageMode` picks how a message from the preview page is delivered to the
+ * running turn (see MessageMode). It is not a rendering preference: it is read at
+ * every injection, so the page can flip it and ask immediately.
  *
  * Writes are atomic (temp file + rename) and debounced so a burst of font-size /
  * line-height clicks does not hammer the disk.
@@ -30,6 +35,14 @@ export type BgPref = "white" | "dim" | "wood" | "cyan";
 /** UI language of the preview page. */
 export type UiLang = "en" | "zh";
 
+/**
+ * How a preview-page message is delivered into the pi session: `followUp` queues it
+ * after the current turn, `steer` injects it mid-turn (right after a tool batch) so it
+ * can redirect work that is still running. Only meaningful while the agent is
+ * streaming; either way the message always triggers a turn.
+ */
+export type MessageMode = "followUp" | "steer";
+
 export interface UserPrefs {
 	/** null = not set (falls back to the env hint / following the OS theme). */
 	theme: ThemePref | null;
@@ -44,7 +57,16 @@ export interface UserPrefs {
 	 * server bind address). User-level only: never writable from the preview page.
 	 */
 	browserHost: string | null;
+	/**
+	 * Delivery mode for messages coming from the preview page. null = not set, which behaves
+	 * exactly like "followUp" (so upgrading never changes existing behaviour). Writable from
+	 * the preview page (POST /prefs) and read at every injection.
+	 */
+	messageMode: MessageMode | null;
 }
+
+/** Delivery mode used when the preference is unset (identical to the pre-upgrade behaviour). */
+export const DEFAULT_MESSAGE_MODE: MessageMode = "followUp";
 
 /** Kept in sync with the front-end setScale clamp range. */
 export const SCALE_MIN = 0.7;
@@ -62,6 +84,15 @@ export function normalizeBg(value: unknown): BgPref | null {
 	return value === "white" || value === "dim" || value === "wood" || value === "cyan" ? value : null;
 }
 
+/**
+ * Strict, case-sensitive: every writer (the page and the /prefs whitelist) sends a canonical
+ * literal, so anything else - including a hand-edited `"Steer"` in settings.json - collapses to
+ * null (unset = followUp) instead of corrupting the file.
+ */
+export function normalizeMessageMode(value: unknown): MessageMode | null {
+	return value === "followUp" || value === "steer" ? value : null;
+}
+
 export function clampScale(value: unknown): number | null {
 	if (typeof value !== "number" || !isFinite(value)) return null;
 	return Math.min(SCALE_MAX, Math.max(SCALE_MIN, Math.round(value * 100) / 100));
@@ -76,8 +107,9 @@ export function clampLineHeight(value: unknown): number | null {
  * Validate a browser host for the persisted setting. Returns a human-readable
  * error message for invalid input, or null when the value is acceptable.
  *
- * Accepted: hostname (`my-pc.local`), IPv4 (`192.168.10.10`), bare IPv6 (`::1`,
- * `fe80::1%en0`) and bracketed IPv6 (`[::1]`, stored de-bracketed). Rejected:
+ * Accepted: hostname (including mDNS `*.local` names), IPv4 (`198.51.100.10`, a
+ * documentation range), bare IPv6 (`::1`, `fe80::1%en0`) and bracketed IPv6
+ * (`[::1]`, stored de-bracketed). Rejected:
  * empty values, whitespace, scheme / path (`http://...`, `host/...`) and any port
  * suffix (`host:8080`, `[::1]:8080`) - the port always comes from the running
  * preview server (a fresh random port per session), never from this setting.
@@ -131,6 +163,11 @@ export function resolveUiLang(explicit?: UiLang | null): UiLang {
 /** Where the browser host for a preview URL came from. */
 export type BrowserHostSource = "explicit" | "persisted" | "bind";
 
+/** The effective delivery mode: a concrete value, never null. Unset / invalid = followUp. */
+export function resolveMessageMode(prefs: Pick<UserPrefs, "messageMode"> | null | undefined): MessageMode {
+	return normalizeMessageMode(prefs?.messageMode) ?? DEFAULT_MESSAGE_MODE;
+}
+
 /** Explicit --host > persisted browserHost > bind fallback. Pure; the caller reads prefs at call time. */
 export function pickBrowserHost(
 	explicit: string | null | undefined,
@@ -158,9 +195,10 @@ export function loadPrefs(file: string = prefsFilePath()): UserPrefs {
 			scale: clampScale(obj.scale),
 			lineHeight: clampLineHeight(obj.lineHeight),
 			browserHost: normalizeBrowserHost(obj.browserHost),
+			messageMode: normalizeMessageMode(obj.messageMode),
 		};
 	} catch {
-		return { theme: null, bg: null, scale: null, lineHeight: null, browserHost: null };
+		return { theme: null, bg: null, scale: null, lineHeight: null, browserHost: null, messageMode: null };
 	}
 }
 
@@ -172,6 +210,7 @@ export function savePrefs(patch: Partial<UserPrefs>, file: string = prefsFilePat
 	if (patch.scale !== undefined) merged.scale = clampScale(patch.scale);
 	if (patch.lineHeight !== undefined) merged.lineHeight = clampLineHeight(patch.lineHeight);
 	if (patch.browserHost !== undefined) merged.browserHost = normalizeBrowserHost(patch.browserHost);
+	if (patch.messageMode !== undefined) merged.messageMode = normalizeMessageMode(patch.messageMode);
 	writePrefsAtomic(merged, file);
 	return merged;
 }
@@ -222,7 +261,22 @@ export function savePrefsDebounced(patch: Partial<UserPrefs>, file: string = pre
 		}, 200);
 		saveTimer.unref?.();
 	}
-	return { ...loadPrefs(file), ...resolvePatch(pendingPatch) };
+	const base = loadPrefs(file);
+	return { ...base, ...resolvePatch(pendingPatch, base) };
+}
+
+/**
+ * Prefs including a patch that is still sitting in the debounce window.
+ *
+ * Every message injection reads prefs through here: a user who switches the delivery mode and
+ * immediately asks a question must not hit the 200ms debounce (plain `loadPrefs()` would still
+ * read the old value from disk, so a page that just wrote `steer` would inject as `followUp`).
+ * Reads, never writes: the pending patch is only applied to the returned view.
+ */
+export function loadPrefsLive(file: string = prefsFilePath()): UserPrefs {
+	const base = loadPrefs(file);
+	const pending = pendingFile === file ? pendingPatch : null;
+	return { ...base, ...resolvePatch(pending, base) };
 }
 
 /**
@@ -231,25 +285,33 @@ export function savePrefsDebounced(patch: Partial<UserPrefs>, file: string = pre
  * `browserHost` is deliberately absent from the returned object: this is the page-write channel
  * (POST /prefs), and keeping the key out means the page can never touch it. The caller-side
  * spread `{ ...loadPrefs(file), ...resolvePatch(...) }` still carries the persisted value through.
+ *
+ * `base` is passed in rather than re-read so a caller that already loaded the file (and knows
+ * which `file` it loaded) is not charged a second read that would also ignore its own `file`.
  */
-function resolvePatch(patch: Partial<UserPrefs> | null): { theme: ThemePref | null; bg: BgPref | null; scale: number | null; lineHeight: number | null } {
+function resolvePatch(
+	patch: Partial<UserPrefs> | null,
+	base: UserPrefs,
+): { theme: ThemePref | null; bg: BgPref | null; scale: number | null; lineHeight: number | null; messageMode: MessageMode | null } {
 	const out = {
 		theme: undefined as ThemePref | null | undefined,
 		bg: undefined as BgPref | null | undefined,
 		scale: undefined as number | null | undefined,
 		lineHeight: undefined as number | null | undefined,
+		messageMode: undefined as MessageMode | null | undefined,
 	};
 	if (patch) {
 		if (patch.theme !== undefined) out.theme = normalizeTheme(patch.theme);
 		if (patch.bg !== undefined) out.bg = normalizeBg(patch.bg);
 		if (patch.scale !== undefined) out.scale = clampScale(patch.scale);
 		if (patch.lineHeight !== undefined) out.lineHeight = clampLineHeight(patch.lineHeight);
+		if (patch.messageMode !== undefined) out.messageMode = normalizeMessageMode(patch.messageMode);
 	}
-	const base = loadPrefs();
 	return {
 		theme: out.theme !== undefined ? out.theme : base.theme,
 		bg: out.bg !== undefined ? out.bg : base.bg,
 		scale: out.scale !== undefined ? out.scale : base.scale,
 		lineHeight: out.lineHeight !== undefined ? out.lineHeight : base.lineHeight,
+		messageMode: out.messageMode !== undefined ? out.messageMode : base.messageMode,
 	};
 }

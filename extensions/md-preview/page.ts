@@ -50,6 +50,13 @@ export interface PageOptions {
 	prefLineHeight?: number | null;
 	/** User-level persisted reading background (white/dim/wood/cyan); null/undefined = pure white. */
 	prefBg?: BgPref | null;
+	/**
+	 * User-level persisted delivery mode for what this page sends. The server normalizes it to a
+	 * concrete value before rendering; null/undefined (old server, nothing persisted) means the
+	 * product default "followUp". Kept inline instead of importing MessageMode so the page stays
+	 * independent of the prefs module.
+	 */
+	prefMessageMode?: "followUp" | "steer" | null;
 	/** GET endpoint that downloads the raw Markdown source of the current document. */
 	downloadUrl?: string;
 	/** POST endpoint that persists theme/scale changes into the user-level prefs file. */
@@ -486,6 +493,17 @@ body {
 	font-variant-numeric: tabular-nums;
 	color: var(--text-2);
 	user-select: none;
+}
+
+/* Message-mode picker: two mutually exclusive radios that reuse the segmented look,
+   plus one line explaining the selected mode. */
+.seg button[role="radio"] { min-width: 0; padding: 0 10px; font-size: 0.78rem; }
+.mode-hint {
+	flex: none;
+	max-width: 176px;
+	font-size: 0.68rem;
+	line-height: 1.35;
+	color: var(--text-3);
 }
 
 .live-pill {
@@ -1315,6 +1333,24 @@ body {
 
 /* ---------- responsive ---------- */
 
+@media (max-width: 1279px) {
+	/* The topbar has no room for the explanation below the widest layout: it stays
+	   available through the radios' title and the group's aria-describedby. */
+	.mode-hint { display: none; }
+	/* Keep every control reachable without pushing the page wider than the viewport:
+	   the controls become one horizontal strip, the brand keeps at least 28%. */
+	.controls {
+		flex: 0 1 auto;
+		min-width: 0;
+		max-width: 72%;
+		overflow-x: auto;
+		overflow-y: hidden;
+		overscroll-behavior-x: contain;
+		scrollbar-width: none;
+	}
+	.controls::-webkit-scrollbar { display: none; }
+}
+
 @media (max-width: 1080px) {
 	.layout { grid-template-columns: minmax(0, 1fr); gap: 0; padding-top: 28px; }
 	.toc { display: none; }
@@ -1606,6 +1642,7 @@ const PAGE_JS = `
 		setLive(liveState);
 		fontValue.title = T.resetDefault;
 		lineHeightValue.title = T.resetDefault;
+		refreshModeHint();
 		var copyBtns = document.querySelectorAll(".copy-btn");
 		for (var i = 0; i < copyBtns.length; i++) {
 			copyBtns[i].textContent = copyBtns[i].classList.contains("done") ? T.copyDone : T.copyBtn;
@@ -1852,6 +1889,72 @@ const PAGE_JS = `
 	lineHeightValue.addEventListener("click", function () { setLineHeight(LINE_DEFAULT); });
 	lineHeightValue.style.cursor = "pointer";
 	lineHeightValue.title = T.resetDefault;
+
+	/* ---------- message mode (how the Agent receives what this page sends) ---------- */
+
+	// The server renders the persisted value and is the only source of truth: the effect
+	// lives server-side (deliverAs), so a localStorage mirror could show a mode the next
+	// delivery will not honour. Anything unexpected falls back to the product default.
+	var MODE_FOLLOW_UP = "followUp", MODE_STEER = "steer";
+	var modePref = root.getAttribute("data-msg-mode") === MODE_STEER ? MODE_STEER : MODE_FOLLOW_UP;
+	var modeGroup = document.getElementById("modeGroup");
+	var modeHint = document.getElementById("modeHint");
+	function modeHintText(which) {
+		return (which === MODE_STEER ? T.modeHintSteer : T.modeHintFollowUp) || "";
+	}
+	function refreshModeHint() {
+		if (!modeHint) return;
+		modeHint.textContent = modeHintText(modePref);
+	}
+	function applyMessageMode(which, persist) {
+		modePref = which === MODE_STEER ? MODE_STEER : MODE_FOLLOW_UP;
+		root.setAttribute("data-msg-mode", modePref);
+		if (persist !== false) savePrefs({ messageMode: modePref });
+		var btns = modeGroup ? modeGroup.querySelectorAll("[data-mode-set]") : [];
+		for (var i = 0; i < btns.length; i++) {
+			var on = btns[i].getAttribute("data-mode-set") === modePref;
+			btns[i].classList.toggle("active", on);
+			btns[i].setAttribute("aria-checked", on ? "true" : "false");
+			btns[i].setAttribute("tabindex", on ? "0" : "-1");
+		}
+		refreshModeHint();
+	}
+	function modeSelect(index) {
+		var btns = modeGroup ? modeGroup.querySelectorAll("[data-mode-set]") : [];
+		if (!btns.length) return;
+		var i = index < 0 ? btns.length - 1 : index % btns.length;
+		applyMessageMode(btns[i].getAttribute("data-mode-set"), true);
+		btns[i].focus();
+	}
+	function modeStep(dir) {
+		var btns = modeGroup ? modeGroup.querySelectorAll("[data-mode-set]") : [];
+		if (!btns.length) return;
+		var cur = 0;
+		for (var i = 0; i < btns.length; i++) if (btns[i].getAttribute("aria-checked") === "true") cur = i;
+		modeSelect((cur + dir + btns.length) % btns.length);
+	}
+	if (modeGroup) {
+		// Radio-group keyboard contract: arrows move AND select (selection follows focus),
+		// Home/End jump to the edges. Space and Enter stay native (they fire click).
+		modeGroup.addEventListener("keydown", function (e) {
+			var k = e.key;
+			if (k === "ArrowRight" || k === "ArrowDown") { e.preventDefault(); modeStep(1); }
+			else if (k === "ArrowLeft" || k === "ArrowUp") { e.preventDefault(); modeStep(-1); }
+			else if (k === "Home") { e.preventDefault(); modeSelect(0); }
+			else if (k === "End") { e.preventDefault(); modeSelect(-1); }
+		});
+	}
+	document.addEventListener("click", function (e) {
+		var t = e.target;
+		while (t && t !== document) {
+			if (t.getAttribute && t.getAttribute("data-mode-set")) {
+				applyMessageMode(t.getAttribute("data-mode-set"), true);
+				return;
+			}
+			t = t.parentNode;
+		}
+	});
+	applyMessageMode(modePref, false);
 
 	/* ---------- toast ---------- */
 
@@ -3700,6 +3803,7 @@ const PAGE_JS = `
 		clone.removeAttribute("data-pref-scale");
 		clone.removeAttribute("data-pref-line-height");
 		clone.removeAttribute("data-pref-bg");
+		clone.removeAttribute("data-msg-mode");
 		clone.style.setProperty("--font-scale", String(scale));
 		clone.style.setProperty("--line-height", String(lineHeight));
 		// Freeze the effective language (including an in-page switch) into the snapshot.
@@ -3710,6 +3814,8 @@ const PAGE_JS = `
 		for (var i = 0; i < scripts.length; i++) scripts[i].parentNode.removeChild(scripts[i]);
 		removeInClone(clone, ["exportBtn", "downloadBtn", "qaSelBtn", "revSelBtn", "qaSelBar", "askPanel", "langSeg", "qaModal", "queueGroup", "revToast"]);
 		removeInClone(clone, ["chatInput"]);
+		// The offline snapshot has no script and no server: a live-looking mode switch would lie.
+		removeInClone(clone, ["modeGroup", "modeHint"]);
 		var prog = clone.querySelector(".progress");
 		if (prog && prog.parentNode) prog.parentNode.removeChild(prog);
 		/* Transient toast state must not be frozen into the snapshot: the
@@ -3867,7 +3973,7 @@ function cwdBase(p: string): string {
 }
 
 export function renderPage(options: PageOptions): string {
-	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefLineHeight, prefBg, downloadUrl, prefsUrl, askUrl, askBatchUrl, reviseUrl, revision, chatUrl, mermaidUrl, qa, version, sessionCwd } = options;
+	const { title, subtitle, bodyHtml, toc, docId, updateUrl, closeUrl, themeHint, prefScale, prefLineHeight, prefBg, prefMessageMode, downloadUrl, prefsUrl, askUrl, askBatchUrl, reviseUrl, revision, chatUrl, mermaidUrl, qa, version, sessionCwd } = options;
 	const lang = normalizeLang(options.lang);
 	const t = STRINGS[lang];
 	const cwdPath = typeof sessionCwd === "string" && sessionCwd.trim() ? sessionCwd : "";
@@ -3882,9 +3988,14 @@ export function renderPage(options: PageOptions): string {
 	const scaleAttr = typeof prefScale === "number" && isFinite(prefScale) ? ` data-pref-scale="${prefScale}"` : "";
 	const lineHeightAttr = typeof prefLineHeight === "number" && isFinite(prefLineHeight) ? ` data-pref-line-height="${prefLineHeight}"` : "";
 	const bgAttr = prefBg ? ` data-pref-bg="${escapeHtml(prefBg)}"` : "";
+	// Delivery mode for what this page sends: server-rendered value wins; anything else
+	// (old server, bad value) degrades to the product default.
+	const msgMode: "followUp" | "steer" = prefMessageMode === "steer" ? "steer" : "followUp";
+	const msgModeAttr = ` data-msg-mode="${msgMode}"`;
+	const msgFollowUp = msgMode === "followUp";
 
 	return `<!doctype html>
-<html lang="${t.htmlLang}" data-lang-hint="${lang}"${hintAttr}${scaleAttr}${lineHeightAttr}${bgAttr}>
+<html lang="${t.htmlLang}" data-lang-hint="${lang}"${hintAttr}${scaleAttr}${lineHeightAttr}${bgAttr}${msgModeAttr}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -3911,6 +4022,11 @@ ${THEME_BOOT}
 			</div>
 		</div>
 		<div class="controls">
+			<div class="seg" id="modeGroup" role="radiogroup" aria-label="${escapeHtml(t.modeLabel)}" data-i18n-aria="modeLabel" aria-describedby="modeHint">
+				<button type="button" role="radio" data-mode-set="followUp" aria-checked="${msgFollowUp ? "true" : "false"}" tabindex="${msgFollowUp ? "0" : "-1"}" class="${msgFollowUp ? "active" : ""}" title="${escapeHtml(t.modeHintFollowUp)}" data-i18n-title="modeHintFollowUp" data-i18n="modeFollowUp">${escapeHtml(t.modeFollowUp)}</button>
+				<button type="button" role="radio" data-mode-set="steer" aria-checked="${msgFollowUp ? "false" : "true"}" tabindex="${msgFollowUp ? "-1" : "0"}" class="${msgFollowUp ? "" : "active"}" title="${escapeHtml(t.modeHintSteer)}" data-i18n-title="modeHintSteer" data-i18n="modeSteer">${escapeHtml(t.modeSteer)}</button>
+			</div>
+			<span class="mode-hint" id="modeHint">${escapeHtml(msgFollowUp ? t.modeHintFollowUp : t.modeHintSteer)}</span>
 			<div class="queue-group" id="queueGroup" role="group" aria-label="${escapeHtml(t.queueGroupAria)}" data-i18n-aria="queueGroupAria" hidden>
 				<button type="button" class="qbtn" id="askQueueBtn" disabled aria-label="${escapeHtml(t.queueAskBtn)}" title="${escapeHtml(t.queueAskBtn)}" data-i18n-title="queueAskBtn">
 					<span class="qbtn-ico" aria-hidden="true">${icon("chat")}</span><span class="qbtn-label" id="askQueueLabel" data-i18n="queueAskBtn">${escapeHtml(t.queueAskBtn)}</span><span class="qbtn-badge" id="askQueueBadge" aria-hidden="true" hidden>0</span>
