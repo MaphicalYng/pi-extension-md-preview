@@ -557,7 +557,7 @@ body {
 	--card-bg: var(--bg-elev);
 	--card-border: 1px solid var(--border);
 	--card-shadow: var(--shadow-1);
-	--card-radius: 12px;
+	--card-radius: 8px;
 	background: var(--card-bg);
 	border: var(--card-border);
 	border-radius: var(--card-radius);
@@ -1002,7 +1002,7 @@ html[data-export] .toc {
 	left: 0; right: 0;
 	background: var(--bg-elev);
 	border: 1px solid var(--border);
-	border-radius: 12px;
+	border-radius: 8px;
 	padding: 12px 14px;
 	box-shadow: var(--shadow-1);
 	font-size: 0.875em;
@@ -1319,7 +1319,7 @@ html[data-export] .toc {
 .chat {
 	margin-top: 32px;
 	border: 1px solid var(--border);
-	border-radius: 12px;
+	border-radius: 8px;
 	background: var(--bg-elev);
 	padding: 16px 18px;
 }

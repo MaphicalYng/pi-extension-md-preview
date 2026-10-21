@@ -182,7 +182,7 @@ if (smoke) {
 	if (!html.includes('class="admonition admonition-note"')) failures.push("页面缺少 NOTE 提示框");
 	if (!html.includes('class="footnote-ref"') || !html.includes('class="footnotes"')) failures.push("页面缺少脚注结构");
 
-	// 卡片布局契约：正文与目录各是一张 12px 圆角卡片、列间距 32px，导出快照与印刷各自扁平化。
+	// 卡片布局契约：正文与目录各是一张 8px 圆角卡片、列间距 32px，导出快照与印刷各自扁平化。
 	const cssText = (html.match(/<style>([\s\S]*?)<\/style>/) || [null, ""])[1];
 	/*
 	 * 基础规则都在样式表前部、媒体查询在后面，因此只在第一个 @media 之前找规则；
@@ -217,7 +217,7 @@ if (smoke) {
 		if (!/padding:\s*var\(--(card|toc)-pad\)/.test(rule)) failures.push(`${sel} 缺少卡片内边距（var(--card-pad)/var(--toc-pad)）`);
 	}
 	for (const [decl, msg] of [
-		["--card-radius: 12px", "卡片圆角不是 12px"],
+		["--card-radius: 8px", "卡片圆角不是 8px"],
 		["--card-bg: var(--bg-elev)", "卡片底色未使用 --bg-elev"],
 		["--card-shadow: var(--shadow-1)", "卡片阴影未使用 --shadow-1"],
 	]) {
@@ -237,12 +237,12 @@ if (smoke) {
 	if (!html.includes("QA_RAIL_GAP = 32")) failures.push("QA rail 间距常量不是 32px");
 	if (!html.includes("contentRect.left - QA_RAIL_GAP")) failures.push("QA rail 仍在使用硬编码间距");
 	if (html.includes("contentRect.left - 16")) failures.push("QA rail 残留旧的 16px 间距");
-	// Agent 卡片与正文卡片分离：.chat 也是独立卡片，间距与卡片间距一致，圆角统一到 12px
+	// Agent 卡片与正文卡片分离：.chat 也是独立卡片，间距与卡片间距一致，圆角统一到 8px
 	const chatCss = cssRule(".chat");
 	if (!/margin-top:\s*32px/.test(chatCss)) failures.push(".chat 与正文卡片的间距不是 32px");
-	if (!/border-radius:\s*12px/.test(chatCss)) failures.push(".chat 圆角未对齐 12px");
+	if (!/border-radius:\s*8px/.test(chatCss)) failures.push(".chat 圆角未对齐 8px");
 	const qaCardCss = cssRule(".qa-card");
-	if (!/border-radius:\s*12px/.test(qaCardCss)) failures.push(".qa-card 圆角未对齐 12px");
+	if (!/border-radius:\s*8px/.test(qaCardCss)) failures.push(".qa-card 圆角未对齐 8px");
 	// 白色纸面下 --bg 与 --bg-elev 同色，卡片靠加强阴影维持层次
 	if (!cssText.includes(':root[data-theme="light"][data-bg="white"] .content')) failures.push("缺少 white 预设下的卡片阴影加强规则");
 	else if (!cssText.includes("0 4px 14px rgba(16, 24, 40, 0.08)")) failures.push("white 预设的卡片阴影值不符合预期");
