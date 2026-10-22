@@ -241,6 +241,11 @@ if (smoke) {
 	const chatCss = cssRule(".chat");
 	if (!/margin-top:\s*32px/.test(chatCss)) failures.push(".chat 与正文卡片的间距不是 32px");
 	if (!/border-radius:\s*8px/.test(chatCss)) failures.push(".chat 圆角未对齐 8px");
+	// 问答正文借用 .content 排版，但不得继承文章卡片的壳（边框/底色/阴影/圆角/内边距）
+	const chatBodyCss = cssRule(".chat-body.content");
+	if (!/background:\s*transparent/.test(chatBodyCss)) failures.push("chat 正文仍继承 .content 卡片底色");
+	if (!/box-shadow:\s*none/.test(chatBodyCss)) failures.push("chat 正文仍继承 .content 卡片阴影");
+	if (!/border:\s*0/.test(chatBodyCss)) failures.push("chat 正文仍继承 .content 卡片边框");
 	const qaCardCss = cssRule(".qa-card");
 	if (!/border-radius:\s*8px/.test(qaCardCss)) failures.push(".qa-card 圆角未对齐 8px");
 	// 白色纸面下 --bg 与 --bg-elev 同色，卡片靠加强阴影维持层次

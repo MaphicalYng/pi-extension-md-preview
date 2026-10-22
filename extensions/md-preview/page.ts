@@ -592,6 +592,17 @@ html[data-export] .toc {
 	--toc-pad: 0;
 }
 
+/* Chat message bodies reuse .content only for its typography (headings, lists, code,
+   tables, mermaid); the card chrome they would inherit from the article card reads as
+   a floating white card nested inside the tinted chat rows, so it is reset here. */
+.chat-body.content {
+	background: transparent;
+	border: 0;
+	box-shadow: none;
+	border-radius: 0;
+	padding: 0;
+}
+
 @keyframes rise {
 	from { opacity: 0; transform: translateY(10px); }
 	to { opacity: 1; transform: none; }
