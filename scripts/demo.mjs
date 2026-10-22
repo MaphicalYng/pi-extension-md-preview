@@ -237,10 +237,10 @@ if (smoke) {
 	if (!html.includes("QA_RAIL_GAP = 32")) failures.push("QA rail 间距常量不是 32px");
 	if (!html.includes("contentRect.left - QA_RAIL_GAP")) failures.push("QA rail 仍在使用硬编码间距");
 	if (html.includes("contentRect.left - 16")) failures.push("QA rail 残留旧的 16px 间距");
-	// Agent 卡片与正文卡片分离：.chat 也是独立卡片，间距与卡片间距一致，圆角统一到 8px
+	// Agent 问答区不再是独立卡片：色块行直接落在页面底色上，只保留上下间距
 	const chatCss = cssRule(".chat");
-	if (!/margin-top:\s*32px/.test(chatCss)) failures.push(".chat 与正文卡片的间距不是 32px");
-	if (!/border-radius:\s*8px/.test(chatCss)) failures.push(".chat 圆角未对齐 8px");
+	if (!/margin-top:\s*48px/.test(chatCss)) failures.push(".chat 与正文内容的间距不是 48px");
+	if (/border|background|border-radius/.test(chatCss)) failures.push(".chat 仍残留卡片样式（边框/底色/圆角）");
 	const qaCardCss = cssRule(".qa-card");
 	if (!/border-radius:\s*8px/.test(qaCardCss)) failures.push(".qa-card 圆角未对齐 8px");
 	// 白色纸面下 --bg 与 --bg-elev 同色，卡片靠加强阴影维持层次
