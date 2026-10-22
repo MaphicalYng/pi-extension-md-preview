@@ -1317,7 +1317,11 @@ html[data-export] .toc {
 /* ---------- document chat (bottom conversation) ---------- */
 
 .chat {
-	margin-top: 48px;
+	margin-top: 32px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--bg-elev);
+	padding: 16px 18px;
 }
 .chat-head { margin-bottom: 12px; }
 .chat-title { font-weight: 650; font-size: 0.95rem; }
@@ -1433,6 +1437,7 @@ html[data-export] .toc {
 	.content { padding: 20px 16px; }
 	.heading-anchor { display: none; }
 	.to-top { right: 16px; bottom: 16px; }
+	.chat { padding: 14px; }
 	/* The ask panel becomes a bottom drawer; openPanel clears the inline top/left. */
 	.qa-panel {
 		position: fixed;
@@ -1467,6 +1472,7 @@ html[data-export] .toc {
 	body { background: #fff; color: #000; }
 	.layout { display: block; padding: 0; }
 	.content, .toc { --card-bg: transparent; --card-border: 0; --card-shadow: none; --card-radius: 0; --card-pad: 0; --toc-pad: 0; }
+	.chat { border: 0; padding: 0; background: none; }
 	.code-block { break-inside: avoid; }
 	.qa-sel-bar, .queue-group, .rev-toast, .sr-only { display: none !important; }
 	.rev-flash { background: none !important; box-shadow: none !important; }
