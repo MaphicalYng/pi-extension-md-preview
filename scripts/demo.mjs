@@ -233,6 +233,18 @@ if (smoke) {
 	}
 	const printCss = cssText.slice(cssText.indexOf("@media print"));
 	if (!printCss.includes("--card-shadow: none")) failures.push("印刷样式未扁平化卡片（@media print）");
+
+	// 设置面板：display:grid 会压过 UA 的 [hidden] 规则，因此必须自己声明隐藏契约，
+	// 否则关闭后的面板会继续盖在正文上（这份样式契约不允许被后续改动默默删掉）。
+	const settingsPanelRule = cssRule(".settings-panel");
+	if (!settingsPanelRule) failures.push("缺少 .settings-panel 规则（设置面板）");
+	else {
+		if (!/position:\s*absolute/.test(settingsPanelRule)) failures.push("设置面板未使用 absolute 定位（应挂在齿轮下方）");
+		if (!/display:\s*grid/.test(settingsPanelRule)) failures.push("设置面板未使用 grid 布局（行对齐会错位）");
+	}
+	if (!cssText.includes(".settings-panel[hidden] { display: none; }")) {
+		failures.push("设置面板缺少 [hidden] 隐藏契约（display:grid 会压过 UA 的 [hidden]）");
+	}
 	// Q&A rail 与正文卡片的间距：32px 且不再残留 16px 字面量
 	if (!html.includes("QA_RAIL_GAP = 32")) failures.push("QA rail 间距常量不是 32px");
 	if (!html.includes("contentRect.left - QA_RAIL_GAP")) failures.push("QA rail 仍在使用硬编码间距");

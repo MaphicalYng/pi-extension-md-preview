@@ -503,12 +503,106 @@ body {
 /* Message-mode picker: two mutually exclusive radios that reuse the segmented look,
    plus one line explaining the selected mode. */
 .seg button[role="radio"] { min-width: 0; padding: 0 10px; font-size: 0.78rem; }
-.mode-hint {
-	flex: none;
-	max-width: 176px;
-	font-size: 0.68rem;
-	line-height: 1.35;
+
+/* Settings popover. Six groups of display preferences laid out flat in the topbar
+   crowded out the document title and pushed the chip row past the header; behind one
+   gear they stay a click away without competing with the content. The panel is not
+   modal: it previews changes live and closes on an outside press, Escape or the gear. */
+.settings { position: relative; flex: none; }
+.gear-btn {
+	appearance: none;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 34px;
+	height: 34px;
+	padding: 0;
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	background: var(--bg-elev);
+	color: var(--text-2);
+	cursor: pointer;
+	transition: background-color 0.18s var(--ease), color 0.18s var(--ease), transform 0.12s var(--ease);
+}
+.gear-btn:hover { background: var(--accent-soft); color: var(--text); }
+.gear-btn:active { transform: scale(0.94); }
+.gear-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.gear-btn svg { width: 16px; height: 16px; }
+.settings[data-open="1"] .gear-btn { background: var(--accent); border-color: var(--accent); color: #fff; }
+:root[data-theme="dark"] .settings[data-open="1"] .gear-btn { color: #0e1116; }
+
+.settings-panel {
+	position: absolute;
+	top: calc(100% + 8px);
+	right: 0;
+	z-index: 96;
+	width: 290px;
+	max-width: calc(100vw - 20px);
+	display: grid;
+	gap: 6px;
+	padding: 12px;
+	background: var(--bg-elev);
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	box-shadow: var(--shadow-2);
+	font-size: 0.8rem;
+	/* Short viewports must still reach the last row. dvh, not vh: a panel anchored under
+	   the topbar must not be sized against a viewport the URL bar is currently eating. */
+	max-height: min(70dvh, 520px);
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	/* Anchored to the gear: the panel grows out of the button that opened it. */
+	transform-origin: right top;
+	/* Replays every time [hidden] is removed, same trick as the ask panel. */
+	animation: settings-in 150ms var(--ease) both;
+}
+/* display: grid above would beat the UA [hidden] rule, so state the hiding explicitly. */
+.settings-panel[hidden] { display: none; }
+/* Opened from the keyboard: the user is already mid-action, so it just appears. */
+.settings-panel[data-instant] { animation: none; }
+.settings-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
+.settings-title { font-weight: 650; font-size: 0.82rem; }
+.settings-close {
+	appearance: none;
+	border: 0;
+	background: transparent;
 	color: var(--text-3);
+	font: inherit;
+	font-size: 1rem;
+	line-height: 1;
+	width: 24px;
+	height: 24px;
+	border-radius: 7px;
+	cursor: pointer;
+	transition: background-color 0.18s var(--ease), color 0.18s var(--ease);
+}
+.settings-close:hover { background: var(--accent-soft); color: var(--text); }
+.settings-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.set-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 30px; }
+.set-row .seg { flex: none; }
+.set-label {
+	color: var(--text-3);
+	font-size: 0.74rem;
+	white-space: nowrap;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.settings-panel .seg { padding: 2px; border-radius: 9px; }
+.settings-panel .seg button { height: 26px; min-width: 26px; padding: 0 7px; }
+.settings-panel .seg button.bg-swatch { width: 22px; min-width: 22px; }
+.set-hint { font-size: 0.68rem; line-height: 1.4; color: var(--text-3); margin: -2px 0 4px; }
+
+/* Touch targets. A mouse gets away with 26px segments; a finger does not, so a coarse
+   pointer trades a little density for hit areas that land. Keyed to the pointer, not to
+   a width breakpoint: a touchscreen laptop needs this, a narrow desktop window does not. */
+@media (pointer: coarse) {
+	.gear-btn { width: 40px; height: 40px; border-radius: 11px; }
+	.settings-panel { width: 300px; padding: 14px; }
+	.settings-close { width: 32px; height: 32px; }
+	.set-row { min-height: 40px; }
+	.settings-panel .seg button { height: 34px; min-width: 36px; }
+	.settings-panel .seg button.bg-swatch { width: 32px; min-width: 32px; }
 }
 
 .live-pill {
@@ -655,6 +749,11 @@ html[data-export] .toc {
 /* Mobile bottom drawer: a solid surface slides, it does not fade. */
 @keyframes qa-panel-drawer-in {
 	from { transform: translateY(100%); }
+}
+/* Settings popover: grows out of the gear. The reduced-motion floor collapses it to
+   an instant appearance - a popover is not something to watch, only to stop noticing. */
+@keyframes settings-in {
+	from { opacity: 0; transform: translateY(-4px) scale(0.97); }
 }
 
 .content > :first-child { margin-top: 0; }
@@ -1491,15 +1590,13 @@ html[data-export] .toc {
 /* ---------- responsive ---------- */
 
 @media (max-width: 1279px) {
-	/* The topbar has no room for the explanation below the widest layout: it stays
-	   available through the radios' title and the group's aria-describedby. */
-	.mode-hint { display: none; }
 	/* Keep every control reachable without pushing the page wider than the viewport:
-	   the controls become one horizontal strip, the brand keeps at least 28%. */
+	   the controls become one horizontal strip, the brand keeps at least 28%. The
+	   settings gear sits outside the strip, so its share is capped at 68%. */
 	.controls {
 		flex: 0 1 auto;
 		min-width: 0;
-		max-width: 72%;
+		max-width: 68%;
 		overflow-x: auto;
 		overflow-y: hidden;
 		overscroll-behavior-x: contain;
@@ -1549,6 +1646,17 @@ html[data-export] .toc {
 		box-shadow: 0 -10px 28px rgba(0, 0, 0, 0.18);
 		/* A solid drawer slides; fading it against the page only muddies the surface. */
 		animation: qa-panel-drawer-in 250ms var(--ease-drawer) both;
+	}
+	/* A 290px popover anchored to a gear near the right edge would overflow a phone:
+	   it spans the viewport instead. It must stay position:absolute, never fixed -
+	   .topbar carries backdrop-filter, which makes it the containing block for fixed
+	   descendants, so a fixed panel would resolve against the 60px bar, not the view. */
+	.settings-panel {
+		left: auto;
+		right: 0;
+		width: calc(100vw - 28px);
+		max-width: none;
+		max-height: 70dvh;
 	}
 	.qa-sel-btn { min-height: 38px; padding: 8px 14px; }
 	.rev-toast { bottom: 14px; }
@@ -1675,6 +1783,35 @@ const EXPORT_JS = `
 	// the export opens (both were frozen to concrete light/dark values at export time).
 	markActive("data-theme-set", root.getAttribute("data-theme-pref") || "system");
 	markActive("data-bg-set", root.getAttribute("data-bg") || "white");
+
+	/* ---------- settings popover (the snapshot keeps the same panel) ---------- */
+
+	var settingsWrap = document.getElementById("settingsWrap");
+	var settingsBtn = document.getElementById("settingsBtn");
+	var settingsPanel = document.getElementById("settingsPanel");
+	var settingsClose = document.getElementById("settingsClose");
+	function setSettingsOpen(open) {
+		if (!settingsPanel || !settingsBtn) return;
+		if (open) settingsPanel.removeAttribute("hidden");
+		else settingsPanel.setAttribute("hidden", "");
+		settingsBtn.setAttribute("aria-expanded", open ? "true" : "false");
+		if (settingsWrap) settingsWrap.setAttribute("data-open", open ? "1" : "0");
+	}
+	if (settingsBtn && settingsPanel) {
+		settingsBtn.addEventListener("click", function () { setSettingsOpen(settingsPanel.hasAttribute("hidden")); });
+		if (settingsClose) settingsClose.addEventListener("click", function () { setSettingsOpen(false); settingsBtn.focus(); });
+		document.addEventListener("pointerdown", function (e) {
+			if (settingsPanel.hasAttribute("hidden")) return;
+			if (settingsWrap && settingsWrap.contains(e.target)) return;
+			setSettingsOpen(false);
+		});
+		document.addEventListener("keydown", function (e) {
+			if (e.key !== "Escape" || settingsPanel.hasAttribute("hidden")) return;
+			e.preventDefault();
+			setSettingsOpen(false);
+			settingsBtn.focus();
+		});
+	}
 
 	/* ---------- font size / line height (clamping semantics match the online version) ---------- */
 
@@ -2138,6 +2275,61 @@ const PAGE_JS = `
 		}
 	});
 	applyMessageMode(modePref, false);
+
+	/* ---------- settings popover ---------- */
+
+	// Every per-page display preference lives behind one gear. The panel is not modal:
+	// a change previews live, so it stays open until an outside press, Escape or the
+	// close button dismisses it - a reader tunes theme and type scale in one visit.
+	var settingsWrap = document.getElementById("settingsWrap");
+	var settingsBtn = document.getElementById("settingsBtn");
+	var settingsPanel = document.getElementById("settingsPanel");
+	var settingsClose = document.getElementById("settingsClose");
+
+	function setSettingsOpen(open, opts) {
+		if (!settingsPanel || !settingsBtn) return;
+		var next = !!open;
+		// A keyboard-initiated open must not animate: the user is already mid-action.
+		if (next && opts && opts.instant) settingsPanel.setAttribute("data-instant", "");
+		if (next) settingsPanel.removeAttribute("hidden");
+		else {
+			settingsPanel.setAttribute("hidden", "");
+			// Cleared on close so the next pointer open still animates.
+			settingsPanel.removeAttribute("data-instant");
+		}
+		settingsBtn.setAttribute("aria-expanded", next ? "true" : "false");
+		if (settingsWrap) settingsWrap.setAttribute("data-open", next ? "1" : "0");
+		if (!next && opts && opts.restore) settingsBtn.focus();
+	}
+
+	if (settingsBtn && settingsPanel) {
+		settingsBtn.addEventListener("click", function (e) {
+			var open = settingsPanel.hasAttribute("hidden");
+			setSettingsOpen(open, { instant: e.detail === 0 });
+			// Keyboard activation (detail 0) hands focus to the first control; a pointer
+			// click leaves focus on the gear so the panel does not steal it.
+			if (open && e.detail === 0) {
+				var first = settingsPanel.querySelector("button:not([disabled])");
+				if (first) first.focus();
+			}
+		});
+		if (settingsClose) settingsClose.addEventListener("click", function () { setSettingsOpen(false, { restore: true }); });
+		// Presses inside the panel (including on a control) must not dismiss it.
+		document.addEventListener("pointerdown", function (e) {
+			if (settingsPanel.hasAttribute("hidden")) return;
+			if (settingsWrap && settingsWrap.contains(e.target)) return;
+			setSettingsOpen(false);
+		});
+		// The full-reply modal and the ask panel own Escape while they are up.
+		document.addEventListener("keydown", function (e) {
+			if (e.key !== "Escape" || settingsPanel.hasAttribute("hidden")) return;
+			if (document.querySelector(".qa-modal.show")) return;
+			var askPanelEl = document.getElementById("askPanel");
+			if (askPanelEl && !askPanelEl.hasAttribute("hidden")) return;
+			e.preventDefault();
+			setSettingsOpen(false, { restore: true });
+		});
+	}
 
 	/* ---------- toast ---------- */
 
@@ -4007,9 +4199,21 @@ const PAGE_JS = `
 		var scripts = clone.querySelectorAll("script");
 		for (var i = 0; i < scripts.length; i++) scripts[i].parentNode.removeChild(scripts[i]);
 		removeInClone(clone, ["exportBtn", "downloadBtn", "qaSelBtn", "revSelBtn", "qaSelBar", "askPanel", "langSeg", "qaModal", "queueGroup", "revToast"]);
+		// The download/export group wrapper goes too: strip only its children and an
+		// empty bordered pill survives in the snapshot.
+		removeInClone(clone, ["docSeg"]);
 		removeInClone(clone, ["chatInput"]);
-		// The offline snapshot has no script and no server: a live-looking mode switch would lie.
-		removeInClone(clone, ["modeGroup", "modeHint"]);
+		// The offline snapshot has no script and no server: a live-looking mode row would lie.
+		removeInClone(clone, ["setModeRow", "modeHint"]);
+		// Language is frozen at export time, so that row is a dead switch in the snapshot.
+		removeInClone(clone, ["setLangRow"]);
+		// A popover frozen open in a shared file reads as stuck UI: ship it closed.
+		var panelClone = clone.querySelector("#settingsPanel");
+		if (panelClone) panelClone.setAttribute("hidden", "");
+		var gearClone = clone.querySelector("#settingsBtn");
+		if (gearClone) gearClone.setAttribute("aria-expanded", "false");
+		var settingsWrapClone = clone.querySelector("#settingsWrap");
+		if (settingsWrapClone) settingsWrapClone.removeAttribute("data-open");
 		var prog = clone.querySelector(".progress");
 		if (prog && prog.parentNode) prog.parentNode.removeChild(prog);
 		/* Transient toast state must not be frozen into the snapshot: the
@@ -4149,6 +4353,8 @@ function icon(name: string): string {
 			'<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h9L20 9.5v9A1.5 1.5 0 0 1 18.5 20h-13A1.5 1.5 0 0 1 4 18.5z"/><path d="M14 4v6h6"/><path d="M8 13.5h6M8 16.5h4"/></svg>',
 		system:
 			'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M8.5 20h7"/></svg>',
+		gear:
+			'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.1"/><path d="M19.1 14.6a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.11a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.11a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.11a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.11a1.7 1.7 0 0 0-1.56 1.03z"/></svg>',
 		sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"/></svg>',
 		moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.2 8.2 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5z"/></svg>',
 		up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>',
@@ -4220,11 +4426,6 @@ ${THEME_BOOT}
 			</div>
 		</div>
 		<div class="controls">
-			<div class="seg" id="modeGroup" role="radiogroup" aria-label="${escapeHtml(t.modeLabel)}" data-i18n-aria="modeLabel" aria-describedby="modeHint">
-				<button type="button" role="radio" data-mode-set="followUp" aria-checked="${msgFollowUp ? "true" : "false"}" tabindex="${msgFollowUp ? "0" : "-1"}" class="${msgFollowUp ? "active" : ""}" title="${escapeHtml(t.modeHintFollowUp)}" data-i18n-title="modeHintFollowUp" data-i18n="modeFollowUp">${escapeHtml(t.modeFollowUp)}</button>
-				<button type="button" role="radio" data-mode-set="steer" aria-checked="${msgFollowUp ? "false" : "true"}" tabindex="${msgFollowUp ? "-1" : "0"}" class="${msgFollowUp ? "" : "active"}" title="${escapeHtml(t.modeHintSteer)}" data-i18n-title="modeHintSteer" data-i18n="modeSteer">${escapeHtml(t.modeSteer)}</button>
-			</div>
-			<span class="mode-hint" id="modeHint">${escapeHtml(msgFollowUp ? t.modeHintFollowUp : t.modeHintSteer)}</span>
 			<div class="queue-group" id="queueGroup" role="group" aria-label="${escapeHtml(t.queueGroupAria)}" data-i18n-aria="queueGroupAria" hidden>
 				<button type="button" class="qbtn" id="askQueueBtn" disabled aria-label="${escapeHtml(t.queueAskBtn)}" title="${escapeHtml(t.queueAskBtn)}" data-i18n-title="queueAskBtn">
 					<span class="qbtn-ico" aria-hidden="true">${icon("chat")}</span><span class="qbtn-label" id="askQueueLabel" data-i18n="queueAskBtn">${escapeHtml(t.queueAskBtn)}</span><span class="qbtn-badge" id="askQueueBadge" aria-hidden="true" hidden>0</span>
@@ -4234,34 +4435,67 @@ ${THEME_BOOT}
 				</button>
 			</div>
 			<span class="live-pill" id="livePill" title="${escapeHtml(t.liveSyncTitle)}" data-i18n-title="liveSyncTitle"><span class="live-dot"></span><span class="live-text" data-i18n="liveSyncText">${escapeHtml(t.liveSyncText)}</span></span>
-			<div class="seg" role="group" aria-label="${escapeHtml(t.groupTheme)}" data-i18n-aria="groupTheme">
-				<button type="button" data-theme-set="system" title="${escapeHtml(t.themeSystem)}" aria-label="${escapeHtml(t.themeSystem)}" data-i18n-title="themeSystem" data-i18n-aria="themeSystem">${icon("system")}</button>
-				<button type="button" data-theme-set="light" title="${escapeHtml(t.themeLight)}" aria-label="${escapeHtml(t.themeLight)}" data-i18n-title="themeLight" data-i18n-aria="themeLight">${icon("sun")}</button>
-				<button type="button" data-theme-set="dark" title="${escapeHtml(t.themeDark)}" aria-label="${escapeHtml(t.themeDark)}" data-i18n-title="themeDark" data-i18n-aria="themeDark">${icon("moon")}</button>
-			</div>
-			<div class="seg" role="group" aria-label="${escapeHtml(t.groupBg)}" data-i18n-aria="groupBg">
-				<button type="button" class="bg-swatch" data-bg-set="white" style="--dot:#ffffff" title="${escapeHtml(t.bgWhite)}" aria-label="${escapeHtml(t.bgWhite)}" data-i18n-title="bgWhite" data-i18n-aria="bgWhite"></button>
-				<button type="button" class="bg-swatch" data-bg-set="dim" style="--dot:#f4f2ed" title="${escapeHtml(t.bgDim)}" aria-label="${escapeHtml(t.bgDim)}" data-i18n-title="bgDim" data-i18n-aria="bgDim"></button>
-				<button type="button" class="bg-swatch" data-bg-set="wood" style="--dot:#f4ead8" title="${escapeHtml(t.bgWood)}" aria-label="${escapeHtml(t.bgWood)}" data-i18n-title="bgWood" data-i18n-aria="bgWood"></button>
-				<button type="button" class="bg-swatch" data-bg-set="cyan" style="--dot:#e3edec" title="${escapeHtml(t.bgCyan)}" aria-label="${escapeHtml(t.bgCyan)}" data-i18n-title="bgCyan" data-i18n-aria="bgCyan"></button>
-			</div>
-			<div class="seg" role="group" aria-label="${escapeHtml(t.groupFont)}" data-i18n-aria="groupFont">
-				<button type="button" id="fontMinus" title="${escapeHtml(t.fontMinusLabel)}" aria-label="${escapeHtml(t.fontMinusLabel)}" data-i18n-title="fontMinusLabel" data-i18n-aria="fontMinusLabel">A&minus;</button>
-				<span id="fontValue">100%</span>
-				<button type="button" id="fontPlus" title="${escapeHtml(t.fontPlusLabel)}" aria-label="${escapeHtml(t.fontPlusLabel)}" data-i18n-title="fontPlusLabel" data-i18n-aria="fontPlusLabel">A+</button>
-			</div>
-			<div class="seg" role="group" aria-label="${escapeHtml(t.groupLine)}" data-i18n-aria="groupLine">
-				<button type="button" id="lineHeightMinus" title="${escapeHtml(t.lineMinusLabel)}" aria-label="${escapeHtml(t.lineMinusLabel)}" data-i18n-title="lineMinusLabel" data-i18n-aria="lineMinusLabel">&minus;</button>
-				<span id="lineHeightValue">1.75</span>
-				<button type="button" id="lineHeightPlus" title="${escapeHtml(t.linePlusLabel)}" aria-label="${escapeHtml(t.linePlusLabel)}" data-i18n-title="linePlusLabel" data-i18n-aria="linePlusLabel">+</button>
-			</div>
-			<div class="seg" role="group" aria-label="${escapeHtml(t.groupDoc)}" data-i18n-aria="groupDoc">
+			<div class="seg" id="docSeg" role="group" aria-label="${escapeHtml(t.groupDoc)}" data-i18n-aria="groupDoc">
 				<a class="dl-btn" id="downloadBtn" href="${escapeHtml(downloadUrl ?? "#")}" download title="${escapeHtml(t.downloadTitle)}" aria-label="${escapeHtml(t.downloadLabel)}" data-i18n-title="downloadTitle" data-i18n-aria="downloadLabel">${icon("download")}</a>
 				<button type="button" class="dl-btn" id="exportBtn" title="${escapeHtml(t.exportTitle)}" aria-label="${escapeHtml(t.exportLabel)}" data-i18n-title="exportTitle" data-i18n-aria="exportLabel">${icon("export")}</button>
 			</div>
-			<div class="seg" id="langSeg" role="group" aria-label="${escapeHtml(t.groupLang)}" data-i18n-aria="groupLang">
-				<button type="button" data-lang-set="en" title="${escapeHtml(t.langEn)}" aria-label="${escapeHtml(t.langEn)}" data-i18n-title="langEn" data-i18n-aria="langEn">${escapeHtml(t.langEn)}</button>
-				<button type="button" data-lang-set="zh" title="${escapeHtml(t.langZh)}" aria-label="${escapeHtml(t.langZh)}" data-i18n-title="langZh" data-i18n-aria="langZh">${escapeHtml(t.langZh)}</button>
+		</div>
+
+		<div class="settings" id="settingsWrap">
+			<button type="button" class="gear-btn" id="settingsBtn" aria-haspopup="dialog" aria-expanded="false" aria-controls="settingsPanel" title="${escapeHtml(t.settingsLabel)}" aria-label="${escapeHtml(t.settingsLabel)}" data-i18n-title="settingsLabel" data-i18n-aria="settingsLabel">${icon("gear")}</button>
+			<div class="settings-panel" id="settingsPanel" role="dialog" aria-labelledby="settingsTitle" hidden>
+				<div class="settings-head">
+					<span class="settings-title" id="settingsTitle" data-i18n="settingsLabel">${escapeHtml(t.settingsLabel)}</span>
+					<button type="button" class="settings-close" id="settingsClose" aria-label="${escapeHtml(t.qaClose)}" title="${escapeHtml(t.qaClose)}" data-i18n-title="qaClose" data-i18n-aria="qaClose">&times;</button>
+				</div>
+				<div class="set-row" id="setModeRow">
+					<span class="set-label" data-i18n="modeLabel">${escapeHtml(t.modeLabel)}</span>
+					<div class="seg" id="modeGroup" role="radiogroup" aria-label="${escapeHtml(t.modeLabel)}" data-i18n-aria="modeLabel" aria-describedby="modeHint">
+						<button type="button" role="radio" data-mode-set="followUp" aria-checked="${msgFollowUp ? "true" : "false"}" tabindex="${msgFollowUp ? "0" : "-1"}" class="${msgFollowUp ? "active" : ""}" title="${escapeHtml(t.modeHintFollowUp)}" data-i18n-title="modeHintFollowUp" data-i18n="modeFollowUp">${escapeHtml(t.modeFollowUp)}</button>
+						<button type="button" role="radio" data-mode-set="steer" aria-checked="${msgFollowUp ? "false" : "true"}" tabindex="${msgFollowUp ? "-1" : "0"}" class="${msgFollowUp ? "" : "active"}" title="${escapeHtml(t.modeHintSteer)}" data-i18n-title="modeHintSteer" data-i18n="modeSteer">${escapeHtml(t.modeSteer)}</button>
+					</div>
+				</div>
+				<div class="set-hint" id="modeHint">${escapeHtml(msgFollowUp ? t.modeHintFollowUp : t.modeHintSteer)}</div>
+				<div class="set-row">
+					<span class="set-label" data-i18n="groupTheme">${escapeHtml(t.groupTheme)}</span>
+					<div class="seg" role="group" aria-label="${escapeHtml(t.groupTheme)}" data-i18n-aria="groupTheme">
+						<button type="button" data-theme-set="system" title="${escapeHtml(t.themeSystem)}" aria-label="${escapeHtml(t.themeSystem)}" data-i18n-title="themeSystem" data-i18n-aria="themeSystem">${icon("system")}</button>
+						<button type="button" data-theme-set="light" title="${escapeHtml(t.themeLight)}" aria-label="${escapeHtml(t.themeLight)}" data-i18n-title="themeLight" data-i18n-aria="themeLight">${icon("sun")}</button>
+						<button type="button" data-theme-set="dark" title="${escapeHtml(t.themeDark)}" aria-label="${escapeHtml(t.themeDark)}" data-i18n-title="themeDark" data-i18n-aria="themeDark">${icon("moon")}</button>
+					</div>
+				</div>
+				<div class="set-row">
+					<span class="set-label" data-i18n="groupBg">${escapeHtml(t.groupBg)}</span>
+					<div class="seg" role="group" aria-label="${escapeHtml(t.groupBg)}" data-i18n-aria="groupBg">
+						<button type="button" class="bg-swatch" data-bg-set="white" style="--dot:#ffffff" title="${escapeHtml(t.bgWhite)}" aria-label="${escapeHtml(t.bgWhite)}" data-i18n-title="bgWhite" data-i18n-aria="bgWhite"></button>
+						<button type="button" class="bg-swatch" data-bg-set="dim" style="--dot:#f4f2ed" title="${escapeHtml(t.bgDim)}" aria-label="${escapeHtml(t.bgDim)}" data-i18n-title="bgDim" data-i18n-aria="bgDim"></button>
+						<button type="button" class="bg-swatch" data-bg-set="wood" style="--dot:#f4ead8" title="${escapeHtml(t.bgWood)}" aria-label="${escapeHtml(t.bgWood)}" data-i18n-title="bgWood" data-i18n-aria="bgWood"></button>
+						<button type="button" class="bg-swatch" data-bg-set="cyan" style="--dot:#e3edec" title="${escapeHtml(t.bgCyan)}" aria-label="${escapeHtml(t.bgCyan)}" data-i18n-title="bgCyan" data-i18n-aria="bgCyan"></button>
+					</div>
+				</div>
+				<div class="set-row">
+					<span class="set-label" data-i18n="groupFont">${escapeHtml(t.groupFont)}</span>
+					<div class="seg" role="group" aria-label="${escapeHtml(t.groupFont)}" data-i18n-aria="groupFont">
+						<button type="button" id="fontMinus" title="${escapeHtml(t.fontMinusLabel)}" aria-label="${escapeHtml(t.fontMinusLabel)}" data-i18n-title="fontMinusLabel" data-i18n-aria="fontMinusLabel">A&minus;</button>
+						<span id="fontValue">100%</span>
+						<button type="button" id="fontPlus" title="${escapeHtml(t.fontPlusLabel)}" aria-label="${escapeHtml(t.fontPlusLabel)}" data-i18n-title="fontPlusLabel" data-i18n-aria="fontPlusLabel">A+</button>
+					</div>
+				</div>
+				<div class="set-row">
+					<span class="set-label" data-i18n="groupLine">${escapeHtml(t.groupLine)}</span>
+					<div class="seg" role="group" aria-label="${escapeHtml(t.groupLine)}" data-i18n-aria="groupLine">
+						<button type="button" id="lineHeightMinus" title="${escapeHtml(t.lineMinusLabel)}" aria-label="${escapeHtml(t.lineMinusLabel)}" data-i18n-title="lineMinusLabel" data-i18n-aria="lineMinusLabel">&minus;</button>
+						<span id="lineHeightValue">1.75</span>
+						<button type="button" id="lineHeightPlus" title="${escapeHtml(t.linePlusLabel)}" aria-label="${escapeHtml(t.linePlusLabel)}" data-i18n-title="linePlusLabel" data-i18n-aria="linePlusLabel">+</button>
+					</div>
+				</div>
+				<div class="set-row" id="setLangRow">
+					<span class="set-label" data-i18n="groupLang">${escapeHtml(t.groupLang)}</span>
+					<div class="seg" id="langSeg" role="group" aria-label="${escapeHtml(t.groupLang)}" data-i18n-aria="groupLang">
+						<button type="button" data-lang-set="en" title="${escapeHtml(t.langEn)}" aria-label="${escapeHtml(t.langEn)}" data-i18n-title="langEn" data-i18n-aria="langEn">${escapeHtml(t.langEn)}</button>
+						<button type="button" data-lang-set="zh" title="${escapeHtml(t.langZh)}" aria-label="${escapeHtml(t.langZh)}" data-i18n-title="langZh" data-i18n-aria="langZh">${escapeHtml(t.langZh)}</button>
+					</div>
+				</div>
 			</div>
 		</div>
 	</div>

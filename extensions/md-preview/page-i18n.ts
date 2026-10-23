@@ -65,6 +65,9 @@ export interface PageStrings {
 	langEn: string;
 	langZh: string;
 
+	// ---- topbar: settings popover ----
+	settingsLabel: string;
+
 	// ---- topbar: message delivery mode ----
 	modeLabel: string;
 	modeFollowUp: string;
@@ -207,6 +210,7 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		langEn: "EN",
 		langZh: "中",
 
+		settingsLabel: "Settings",
 		modeLabel: "Message delivery",
 		modeFollowUp: "Follow up",
 		modeSteer: "Steering",
@@ -335,6 +339,7 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		langEn: "EN",
 		langZh: "中",
 
+		settingsLabel: "设置",
 		modeLabel: "消息投递方式",
 		modeFollowUp: "Follow up",
 		modeSteer: "Steering",
