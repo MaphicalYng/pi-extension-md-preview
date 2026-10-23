@@ -297,7 +297,45 @@ const PAGE_CSS = `
 	--topbar-bg: rgba(16, 29, 29, 0.85);
 }
 
-html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+html {
+	scroll-behavior: smooth;
+	-webkit-text-size-adjust: 100%;
+	/* iOS paints a grey flash over any tapped control unless opted out; the :active rules
+	   below are the real feedback, and unlike :hover they survive on a touch device. */
+	-webkit-tap-highlight-color: transparent;
+}
+
+/* Touch behaviour, declared once instead of per component. manipulation drops the
+   double-tap-zoom wait on anything a finger aims at; user-select:none stops a long press
+   from selecting a control's own label. It is deliberately not global: selecting the
+   document text is the point of this page. */
+button,
+[role="button"],
+[role="radio"],
+[role="tab"],
+summary,
+label,
+.dl-btn,
+.toc-link,
+.to-top {
+	touch-action: manipulation;
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+/* Tapping has to answer: the grey flash is gone, so the controls that never had a
+   :active state get one. A tint, not a scale - these sit on flat surfaces where a small
+   shrink reads as a wobble, and the segmented controls keep their existing scale press. */
+.settings-close:active,
+.qbtn:active:not([disabled]),
+.to-top:active,
+.toc-link:active { background: var(--accent-soft); }
+/* Filled pills cannot tint - accent-soft would flash them pale - so the accent-backed
+   controls press with the segmented controls' scale instead. */
+.qa-sel-btn:active { transform: scale(0.97); }
+/* The chat send button carries a filled accent background, so it presses with weight
+   instead of tint. Opacity keeps it clear of the .primary rule's specificity. */
+.chat-input button:active:not([disabled]) { opacity: 0.8; }
 
 body {
 	margin: 0;
