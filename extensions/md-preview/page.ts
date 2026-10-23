@@ -149,7 +149,9 @@ const PAGE_CSS = `
 		"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
 	--font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 	--topbar-h: 60px;
-	--ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+	--ease: cubic-bezier(0.23, 1, 0.32, 1);
+	/* iOS-like curve: only for surfaces that slide in from a viewport edge. */
+	--ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 :root[data-theme="light"] {
@@ -322,9 +324,12 @@ body {
 }
 .progress-bar {
 	height: 100%;
-	width: 0;
+	/* Full width + scaleX: the only per-frame write on the scroll path, and it never
+	   invalidates layout. A width transition here would lag behind the scroll position. */
+	width: 100%;
+	transform: scaleX(0);
+	transform-origin: left center;
 	background: linear-gradient(90deg, var(--accent), var(--accent-hover));
-	transition: width 0.12s linear;
 }
 
 .topbar {
@@ -564,6 +569,20 @@ body {
 	box-shadow: var(--card-shadow);
 }
 
+/* Theme / paper switches repaint everything at once. Let the surfaces the reader is
+   actually looking at cross over on the same 0.25s curve as body and .topbar, instead of
+   flashing to the new colour while the page margins fade.
+   Text colour is deliberately excluded: glyph edges jumping colour is not what reads as a
+   flash, and adding it means a transition on every heading, code token and table cell. */
+.content, .toc, .chat,
+.code-block, .code-head, .content table, .content th,
+.content pre.mermaid, .content .mermaid-rendered {
+	transition:
+		background-color 0.25s var(--ease),
+		border-color 0.25s var(--ease),
+		box-shadow 0.25s var(--ease);
+}
+
 /* The white paper preset erases the body/card tonal step (bg and bg-elev are the same
    colour), so on that preset the card leans on a stronger shadow to stay a card. */
 :root[data-theme="light"][data-bg="white"] .content,
@@ -606,6 +625,36 @@ html[data-export] .toc {
 @keyframes rise {
 	from { opacity: 0; transform: translateY(10px); }
 	to { opacity: 1; transform: none; }
+}
+
+/* A reply card entering the rail: opacity only, no travel (its position is owned by
+   layoutQaCards() and animated through transform). */
+@keyframes qa-enter {
+	from { opacity: 0; }
+}
+
+/* Full-reply modal: the scrim fades (no travel), the card settles from 0.97. */
+@keyframes qa-modal-scrim-in {
+	from { opacity: 0; }
+}
+@keyframes qa-modal-card-in {
+	from { opacity: 0; transform: scale(0.97); }
+}
+
+/* A new chat turn: smaller travel than the rise keyframe, it is a local insert in an area
+   the reader is already looking at, not a page entrance. */
+@keyframes chat-turn-in {
+	from { opacity: 0; transform: translateY(6px); }
+}
+
+/* Ask / revise panel: anchored to the selection button's top-left corner, so the scale
+   starts from the control the reader just pressed. */
+@keyframes qa-panel-in {
+	from { opacity: 0; transform: scale(0.96); }
+}
+/* Mobile bottom drawer: a solid surface slides, it does not fade. */
+@keyframes qa-panel-drawer-in {
+	from { transform: translateY(100%); }
 }
 
 .content > :first-child { margin-top: 0; }
@@ -896,7 +945,6 @@ html[data-export] .toc {
 }
 .content tbody tr:last-child td { border-bottom: 0; }
 .content tbody tr { transition: background-color 0.15s var(--ease); }
-.content tbody tr:hover { background: var(--accent-soft); }
 
 /* ---------- toc ---------- */
 
@@ -909,7 +957,9 @@ html[data-export] .toc {
 	scrollbar-width: thin;                       /* Firefox */
 	scrollbar-color: var(--border) transparent;
 	font-size: 0.82rem;
-	animation: rise 0.55s var(--ease) both;
+	/* Two columns read as one block when they start together; 60ms of delay turns the nav
+	   into the follow-through of the article instead of a simultaneous fade. */
+	animation: rise 0.5s var(--ease) 60ms both;
 }
 /* WebKit: hairline thumb inset by a transparent border so it floats inside the rounded card */
 .toc::-webkit-scrollbar { width: 8px; }
@@ -943,7 +993,6 @@ html[data-export] .toc {
 	text-overflow: ellipsis;
 	transition: color 0.18s var(--ease), border-color 0.18s var(--ease), transform 0.18s var(--ease);
 }
-.toc-link:hover { color: var(--text); transform: translateX(2px); }
 .toc-link.active { color: var(--accent); border-left-color: var(--accent); font-weight: 550; }
 .toc-link.level-2 { padding-left: 22px; }
 .toc-link.level-3 { padding-left: 36px; }
@@ -1000,7 +1049,6 @@ html[data-export] .toc {
 	z-index: 70;
 }
 .to-top.show { opacity: 1; visibility: visible; transform: none; }
-.to-top:hover { color: var(--accent); transform: translateY(-2px); }
 .to-top svg { width: 16px; height: 16px; }
 
 /* ---------- qa rail (Agent reply cards) ---------- */
@@ -1011,6 +1059,8 @@ html[data-export] .toc {
 .qa-card {
 	position: absolute;
 	left: 0; right: 0;
+	top: 0;
+	transform: translateY(0);
 	background: var(--bg-elev);
 	border: 1px dashed var(--border);
 	border-radius: 8px;
@@ -1019,7 +1069,13 @@ html[data-export] .toc {
 	font-size: 0.875em;
 	line-height: 1.6;
 	pointer-events: auto;
+	transition: transform 220ms var(--ease);
+	animation: qa-enter 160ms var(--ease) both;
 }
+/* First placement must not slide: layoutQaCards() writes the final offset in the same task
+   the card is created in, so a 220ms travel from y=0 would read as the card falling in
+   from the top of the rail. */
+.qa-card[data-fresh] { transition: none; }
 .qa-card.pending { border-style: dashed; box-shadow: none; }
 /* Squeezed windows: the rail overlays the card on purpose, so lift it visually.
    Alternatives left out on purpose: hiding the rail below ~1696px loses every answer, and
@@ -1075,6 +1131,8 @@ html[data-export] .toc {
 	justify-content: center;
 	padding: 24px;
 	background: rgba(14, 17, 22, 0.5);
+	/* Replays on every .show toggle: the display flip from none to flex restarts it. */
+	animation: qa-modal-scrim-in 180ms var(--ease) both;
 }
 .qa-modal.show { display: flex; }
 .qa-modal-card {
@@ -1086,6 +1144,10 @@ html[data-export] .toc {
 	border: 1px solid var(--border);
 	border-radius: 14px;
 	box-shadow: var(--shadow-2);
+	/* A centered modal grows from the centre. Do NOT anchor this to the trigger - that is
+	   the popover rule, not the modal rule. */
+	transform-origin: center;
+	animation: qa-modal-card-in 200ms var(--ease) both;
 }
 .qa-modal-head {
 	display: flex;
@@ -1180,6 +1242,12 @@ html[data-export] .toc {
 	box-shadow: var(--shadow-2);
 	padding: 12px;
 	font-size: 0.82rem;
+	/* Anchored to the selection button's top-left corner - openPanel() copies selBar's
+	   top/left - so the panel grows out of the control the reader just pressed. */
+	transform-origin: left top;
+	/* Replays every time [hidden] is removed: the display flip from none to block
+	   restarts the animation. */
+	animation: qa-panel-in 180ms var(--ease) both;
 }
 .qa-panel-title {
 	font-weight: 650;
@@ -1340,6 +1408,10 @@ html[data-export] .toc {
 .chat-empty { color: var(--text-3); font-size: 0.86rem; text-align: center; padding: 14px 8px; }
 /* Reversed timeline: the list reads newest first, every turn keeps its own anchor. */
 .chat-turn { display: flex; flex-direction: column; gap: 8px; }
+/* A turn arriving while the reader is looking at the conversation: 200ms rise so the new
+   content does not simply appear between two reads. Boot hydration passes quiet=true and
+   skips the class, because .article's own rise is already fading the whole list in. */
+.chat-turn.chat-enter { animation: chat-turn-in 200ms var(--ease) both; }
 /* Alternating rows instead of bubbles: a role chip plus a full-width tinted row
    (accent left bar for the reader, neutral bar for the agent) tells the sides apart.
    Row tints use the faint --chat-* vars so the blocks stay quiet. */
@@ -1405,6 +1477,17 @@ html[data-export] .toc {
 .chat-input button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 :root[data-theme="dark"] .chat-input button.primary { color: #0e1116; }
 
+/* Pointer-type gate: on touch these selectors fire on tap and stay latched until the next
+   tap, which reads as "stuck". Motion and row tint are hover-only affordances, so they
+   only exist on devices that can actually hover. Colour-only hovers elsewhere (copy button,
+   QA buttons, "more" link) are left alone on purpose - a latched colour is not a latched
+   position, and gating them would mean touching a dozen more rules for no visible gain. */
+@media (hover: hover) and (pointer: fine) {
+	.toc-link:hover { color: var(--text); transform: translateX(2px); }
+	.to-top:hover { color: var(--accent); transform: translateY(-2px); }
+	.content tbody tr:hover { background: var(--accent-soft); }
+}
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 1279px) {
@@ -1464,6 +1547,8 @@ html[data-export] .toc {
 		border-radius: 14px 14px 0 0;
 		padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
 		box-shadow: 0 -10px 28px rgba(0, 0, 0, 0.18);
+		/* A solid drawer slides; fading it against the page only muddies the surface. */
+		animation: qa-panel-drawer-in 250ms var(--ease-drawer) both;
 	}
 	.qa-sel-btn { min-height: 38px; padding: 8px 14px; }
 	.rev-toast { bottom: 14px; }
@@ -1471,10 +1556,28 @@ html[data-export] .toc {
 
 @media (prefers-reduced-motion: reduce) {
 	html { scroll-behavior: auto; }
+
+	/* Floor: nothing travels and nothing lingers. Keep this as the default for anything
+	   not explicitly restored below - an unknown element must never move. */
 	*, *::before, *::after {
 		animation-duration: 0.01ms !important;
 		animation-iteration-count: 1 !important;
+		animation-delay: 0s !important;
 		transition-duration: 0.01ms !important;
+	}
+
+	/* Restore only what carries meaning: a 200ms opacity fade that says "this appeared /
+	   disappeared". No position change - that is what causes discomfort. */
+	.toast, .rev-toast, .to-top {
+		transition: opacity 0.2s ease !important;
+	}
+
+	/* Pure-opacity "still working" indicators: zero motion, they must keep pulsing. */
+	.content pre.mermaid[data-status="loading"] {
+		animation: mmdPulse 1.3s ease-in-out infinite !important;
+	}
+	.qa-pulse {
+		animation: qaPulse 1.2s ease-in-out infinite !important;
 	}
 }
 
@@ -2115,7 +2218,7 @@ const PAGE_JS = `
 			ticking = false;
 			var doc = document.documentElement;
 			var max = doc.scrollHeight - doc.clientHeight;
-			progressBar.style.width = (max > 0 ? (doc.scrollTop / max) * 100 : 0) + "%";
+			progressBar.style.transform = "scaleX(" + (max > 0 ? doc.scrollTop / max : 0) + ")";
 			topbar.classList.toggle("scrolled", doc.scrollTop > 8);
 			toTop.classList.toggle("show", doc.scrollTop > 600);
 
@@ -3017,10 +3120,12 @@ const PAGE_JS = `
 		qaRail.style.left = Math.max(railRight - width - layoutRect.left, QA_RAIL_EDGE - layoutRect.left) + "px";
 		qaStackTop = 0;
 		var cards = qaRail.children;
+		/* No style.top writes here: transform never invalidates layout, so the offsetHeight
+		   reads below stay cheap and the position change is the only thing that animates. */
 		for (var i = 0; i < cards.length; i++) {
 			var id = cards[i].getAttribute("data-qa");
 			var top = Math.max(anchorY(id), qaStackTop);
-			cards[i].style.top = top + "px";
+			cards[i].style.transform = "translateY(" + top + "px)";
 			qaStackTop = top + cards[i].offsetHeight + 12;
 		}
 	}
@@ -3056,9 +3161,11 @@ const PAGE_JS = `
 		if (range) ok = highlightRange(entry.id, range);
 		if (!ok) highlightByText(entry.id, entry.quote);
 		var freshCard = buildCard(entry.id, entry);
+		freshCard.setAttribute("data-fresh", "");
 		qaRail.appendChild(freshCard);
 		updateCardClamp(freshCard);
 		layoutQaCards();
+		requestAnimationFrame(function () { freshCard.removeAttribute("data-fresh"); });
 	}
 
 	function restoreQaHighlights() {
@@ -3714,6 +3821,7 @@ const PAGE_JS = `
 		chatState[entry.id] = entry;
 		if (chatEmpty) chatEmpty.hidden = true;
 		var turn = buildChatTurn(entry);
+		if (!quiet) turn.classList.add("chat-enter");
 		insertChatTurn(turn, entry);
 		enhanceChatTurn(turn);
 		chatScrollTop(!quiet);
