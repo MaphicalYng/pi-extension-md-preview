@@ -106,6 +106,19 @@ npm run demo               # render the sample report and open the browser
 npm run demo -- --smoke    # headless smoke test: compile, serve, assert, exit
 ```
 
+### Website
+
+The `website/` directory contains an independent bilingual (Chinese/English) responsive single-page product website built with React + Vite. It follows the browser language by default, with a persistent language switch in the navigation bar:
+
+```bash
+cd website
+npm install
+npm run dev       # local development
+npm run build     # production output in website/dist/
+npm run preview   # preview the production build
+```
+
+
 ## How it works
 
 ```

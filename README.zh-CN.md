@@ -106,6 +106,19 @@ npm run demo               # 渲染示例报告并打开浏览器
 npm run demo -- --smoke    # 无头冒烟测试：编译、起服务、断言渲染结果后退出
 ```
 
+### 官网页面
+
+`website/` 目录包含独立的中英文响应式单页官网（React + Vite），默认跟随浏览器语言，也可通过导航栏切换并记忆选择：
+
+```bash
+cd website
+npm install
+npm run dev       # 本地开发
+npm run build     # 输出到 website/dist/
+npm run preview   # 预览生产构建
+```
+
+
 ## 工作机制
 
 ```
