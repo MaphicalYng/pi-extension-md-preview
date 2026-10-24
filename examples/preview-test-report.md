@@ -112,7 +112,7 @@ print(f"P99 变化: {Metric('p99', 840, 580).delta:.0%}")  # -31%
 
 ```bash
 # 安装并临时加载本插件
-pi install npm:pi-md-preview@0.1.0   # 或本地: pi install ./
+pi install npm:pi-md-preview@0.5.0   # 或本地: pi install ./
 pi --extension extensions/md-preview/index.ts
 ```
 

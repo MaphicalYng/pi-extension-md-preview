@@ -25,7 +25,7 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 | Chat with the agent about the document | A chat area at the bottom of the page takes a message about the whole document (no text selection needed) and injects it into the Pi session together with a summary of the recent chat turns; the agent replies with `md_preview_reply` and the answer appears as an "Agent" message in the chat feed (newest first), restored after refresh/reopen |
 | Stash a batch of revisions | Select a passage → "✎ Revise" → **Stash** the revision comment (the toolbar's **Revise** button counts the queue); one click submits it via `POST /doc/<id>/revise`, the agent edits the Markdown file directly **without posting replies**, then calls `md_preview_revision_done` (`doc?`, `highlights?`) so the page marks the rewritten passages with a color block that fades out in ~3 s |
 | Live progress on a pending wait row | While the agent works on a pending question or chat message, its wait row replaces the static waiting line with the current stage — `Agent is thinking…` → `Running {tool}…` → `Writing the reply… · {n} chars` — and the answer replaces the row when it arrives. Frames are throttled (at most ~8 per second), sent only while that document still has an unanswered entry, shared by every tab of the document; a tab that missed a re-render catches up from the init frame, which carries the current snapshot. Only the stage, tool name, character count and an ≤80-character tail of the text reach the browser — never thinking text, tool arguments or the reply body |
-| Message delivery mode | The top bar switches how page messages reach the agent: **Follow up** (default) queues the question or chat turn until the current turn has finished, while **Steering** is injected as soon as the running tool batch completes, so it can redirect the agent mid-turn without aborting the answer being written or the tool being run. Steering appends a short convention to the prompt (carry on with the work you had not finished, do not start another turn on your own, pausing to ask is allowed). It is a user-level setting shared by every pi instance |
+| Message delivery mode | The top bar's settings popover switches how page messages reach the agent: **Follow up** (default) queues the question or chat turn until the current turn has finished, while **Steering** is injected as soon as the running tool batch completes, so it can redirect the agent mid-turn without aborting the answer being written or the tool being run. Steering appends a short convention to the prompt (carry on with the work you had not finished, do not start another turn on your own, pausing to ask is allowed). It is a user-level setting shared by every pi instance |
 | Markdown as a web page | GFM renderer built on `marked`: headings, tables, fenced code (25+ languages highlighted), blockquotes (incl. `[!NOTE]` … `[!CAUTION]` admonitions), task lists, footnotes, images, autolinks |
 | Mermaid diagrams | `mermaid` fenced blocks render as diagrams; the mermaid runtime is lazy-loaded from the preview server's own origin (flowcharts, sequence diagrams, …) |
 | Bilingual UI (en / zh) | The agent always picks the page UI language explicitly via the required `ui_lang` tool parameter, chosen from the user's language; an in-page 中/EN switch lets the reader override it (remembered in `localStorage`) |
@@ -34,7 +34,7 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 | Light / dark mode | Three modes: follow system / forced light / forced dark (one click in the toolbar) |
 | Font-size control | A- / A+ in ±10% steps across 0.7× – 1.6× |
 | Line-height control | Stepped control across 1.4 – 2.2 (default 1.75) |
-| User-level persistence | Theme, reading background, font scale and line height persist to a user-level config file (`$XDG_CONFIG_HOME/md-preview/settings.json`), surviving sessions and random ports; browser `localStorage` acts as a same-origin fast cache |
+| User-level persistence | Theme, reading background, font scale, line height and message delivery mode persist to a user-level config file (`$XDG_CONFIG_HOME/md-preview/settings.json`), surviving sessions and random ports; browser `localStorage` acts as a same-origin fast cache for reading preferences |
 | Export HTML snapshot | One click exports a self-contained offline HTML file: images inlined, current theme/background/font/language frozen, interactive-only controls stripped — it reads exactly like the live preview |
 | Bonus: live sync | When the source file changes, the page refreshes automatically (SSE) — no need to call the tool again |
 
@@ -45,7 +45,7 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 The package is published on npm as [`pi-md-preview`](https://www.npmjs.com/package/pi-md-preview), and has a page on the Pi site with its manifest and README: [`pi.dev/packages/pi-md-preview`](https://pi.dev/packages/pi-md-preview).
 
 ```bash
-pi install npm:pi-md-preview@0.4.0
+pi install npm:pi-md-preview@0.5.0
 ```
 
 Restart your Pi session after installing. To try it for one invocation without installing:
@@ -131,11 +131,11 @@ Agent writes .md ──► md_preview tool ──► local preview server (127.0
 ## Page tour
 
 - Left table of contents (shown when ≥2 headings): highlights the current section while scrolling, smooth-scrolls on click, collapses into a drawer on mobile.
-- Top toolbar: theme switcher (system / light / dark), reading-background swatches (white / dim / wood / cyan — paper tones in light mode, matching dark variants in dark mode), font-size A- / A+, line-height stepper, language switch (中 / EN), download source, export HTML, and a page progress bar.
+- Top toolbar: a settings gear opens the popover for message delivery, theme (system / light / dark), reading background (white / dim / wood / cyan — paper tones in light mode, matching dark variants in dark mode), font size (A- / A+), line height and language (中 / EN); download source, export HTML and a page progress bar remain directly accessible.
 - Workspace badge: the last path segment of the working directory of the session that opened the document, with the full path on hover; below 720px the label is hidden and only the directory name stays.
 - Code blocks: language label, one-click copy (with success feedback), per-language highlighting; unsupported languages degrade to plain text.
 - Live progress: a pending question card or chat turn shows the agent's stage — thinking, running a tool (with its name), then writing with a character count and a short tail of the text — and the answer replaces the wait line when it arrives.
-- Delivery mode: the top bar's **Message delivery** switch picks between **Follow up** (queue until the turn ends) and **Steering** (injected after the current tool batch, for mid-turn corrections); the hint beside it explains the selected mode, and arrows / Home / End move the selection.
+- Delivery mode: the settings popover's **Message delivery** switch picks between **Follow up** (queue until the turn ends) and **Steering** (injected after the current tool batch, for mid-turn corrections); the hint beside it explains the selected mode, and arrows / Home / End move the selection.
 - Ask about selection: select any body text and click the floating "Ask" button; once the agent replies, a card appears beside the document with the quote, answer and timestamp, and the quoted text is highlighted in orange.
 - Stash queue: the toolbar's **Ask** / **Revise** buttons carry a count badge for stashed items (hidden at zero, disabled while a send is in flight); one click flushes that whole queue in a single request, and a failed send keeps every entry and its badge.
 - Revision wash: when a revision batch is marked done, each matching passage gets a color block that holds for ~2 s and fades out by ~3 s; a reload inside that window replays it on the original schedule.
@@ -151,7 +151,7 @@ extensions/md-preview/
 ├── page.ts        # page template: CSS theme system + interaction scripts (TOC/theme/font/line-height/code highlighting/live sync/ask/chat/stash queue/revision wash/export)
 ├── page-i18n.ts   # bilingual UI string table (en/zh) + language normalization
 ├── server.ts      # local HTTP server: routing, SSE live sync, viewer counting, auto-exit, /prefs, /doc/{id}/ask, /doc/{id}/ask-batch, /doc/{id}/revise, /doc/{id}/download
-├── prefs.ts       # user-level preferences (theme/bg/scale/line-height + persisted browser host): load, validate, atomic debounced persistence
+├── prefs.ts       # user-level preferences (reading/message delivery + persisted browser host): load, validate, atomic debounced persistence
 ├── vendor/        # vendored self-contained Mermaid ESM build (MIT), served lazily from the preview origin
 └── browser.ts     # cross-platform default-browser opener
 scripts/
@@ -198,14 +198,14 @@ MD_PREVIEW_BIND=0.0.0.0 pi
 
 ### User-level preference persistence
 
-Theme, reading background, font scale and line height persist on two levels:
+Theme, reading background, font scale and line height persist on two levels; message delivery mode is also persisted at the user level:
 
 1. **User-level (global)**: `$XDG_CONFIG_HOME/md-preview/settings.json` (`~/.config/md-preview/settings.json` when `XDG_CONFIG_HOME` is unset). Page interactions are debounced and posted to `POST /prefs`, then written atomically; every future preview — any session, any random port — picks them up.
 2. **Browser `localStorage`** (`mdp.theme` / `mdp.bg` / `mdp.scale` / `mdp.lineHeight` / `mdp.lang`): same-origin fast cache, effective immediately within a session; when it misses (e.g. a new port), the user-level file is the fallback.
 
-Load priority: `localStorage` (most recent action on this origin) > user prefs file > `MD_PREVIEW_THEME` env hint > built-in defaults (follow system, white background, 100% font, 1.75 line height). Background and line height have no env hint and fall back straight to the built-in defaults. The UI language follows its own chain: in-page `localStorage` choice > server-sent language (tool param / env / default).
+Load priority: `localStorage` (most recent action on this origin) > user prefs file > `MD_PREVIEW_THEME` env hint > built-in defaults (follow system, white background, 100% font, 1.75 line height). Background and line height have no env hint and fall back straight to the built-in defaults. The UI language follows its own chain: in-page `localStorage` choice > server-sent language (tool param / env / default). Message delivery mode is read from the user-level file and defaults to **Follow up**.
 
-`browserHost` is the exception: it is **user-level only**. The preview page cannot write it — `POST /prefs` accepts the four page keys (`theme` / `bg` / `scale` / `lineHeight`) and the server whitelists exactly those, so a page request can never change the saved host. It is set from the `/md-preview-host` command and resolved for every preview as `--host` > persisted `browserHost` > `localBrowserHost(server.host)` (a wildcard bind opens on `127.0.0.1`).
+`browserHost` is also **user-level only**, but the preview page cannot write it — `POST /prefs` accepts the five page keys (`theme` / `bg` / `scale` / `lineHeight` / `messageMode`) and the server whitelists exactly those, so a page request can never change the saved host. It is set from the `/md-preview-host` command and resolved for every preview as `--host` > persisted `browserHost` > `localBrowserHost(server.host)` (a wildcard bind opens on `127.0.0.1`).
 
 Example prefs file:
 
@@ -214,7 +214,8 @@ Example prefs file:
   "theme": "dark",
   "bg": "wood",
   "scale": 1.15,
-  "lineHeight": 1.75
+  "lineHeight": 1.75,
+  "messageMode": "followUp"
 }
 ```
 

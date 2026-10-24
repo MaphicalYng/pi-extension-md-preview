@@ -185,16 +185,14 @@ if (smoke) {
 	// 卡片布局契约：正文与目录各是一张 8px 圆角卡片、列间距 32px，导出快照与印刷各自扁平化。
 	const cssText = (html.match(/<style>([\s\S]*?)<\/style>/) || [null, ""])[1];
 	/*
-	 * 基础规则都在样式表前部、媒体查询在后面，因此只在第一个 @media 之前找规则；
 	 * 选择器列表按逗号拆成独立项精确比对（`.content, .toc { }` 里的声明对两者都生效），
 	 * 同名规则的花括号内容合并后返回。注释先剔除，否则会被并进后一条规则的选择器里。
+	 * 扫描完整样式表，不能假设基础规则都排在第一个 @media 之前。
 	 */
 	const cssRule = (sel) => {
 		const clean = cssText.replace(/\/\*[\s\S]*?\*\//g, "");
-		const mediaAt = clean.indexOf("@media");
-		const baseline = mediaAt < 0 ? clean : clean.slice(0, mediaAt);
 		const bodies = [];
-		for (const m of baseline.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+		for (const m of clean.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
 			const list = m[1].split(",").map((s) => s.replace(/\s+/g, " ").trim());
 			if (list.includes(sel)) bodies.push(m[2]);
 		}

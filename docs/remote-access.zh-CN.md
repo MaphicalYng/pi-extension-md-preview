@@ -324,7 +324,7 @@ sequenceDiagram
     S-->>B: 文档页面 + SSE 长连接
     B->>S: 选中提问 POST /doc/{id}/ask
     B->>S: 或底部对话 POST /doc/{id}/chat
-    S-->>A: sendUserMessage（deliverAs: followUp）
+    S-->>A: sendUserMessage（deliverAs: 默认 followUp，可选 steer）
     A->>A: 读取仓库相关文件并作答
     A->>S: md_preview_reply
     S-->>B: SSE answer → 回复卡片 / 聊天消息
@@ -345,7 +345,7 @@ sequenceDiagram
 2. **浏览器能访问预览 URL**：host 可达、端口通、防火墙 / 安全组放行（或走 SSH 隧道）。
 3. **SSE 长连接不被破坏**：中间代理不要缓冲、不要过短的 idle timeout，否则提问不出现或回复延迟。
 4. **URL 必须带 token**：页面、SSE、`/ask`、`/chat`、`/prefs`、静态资源全部校验。
-5. **Agent 能收到注入消息并回复**：会话空闲时立即唤醒，忙碌时排队到当前回合结束后处理（`deliverAs: "followUp"`）。
+5. **Agent 能收到注入消息并回复**：会话空闲时立即唤醒。默认 **Follow up** 模式下，忙碌会话会排队到当前回合结束后处理；**Steering** 模式则在当前工具批次结束后注入。
 
 ### 4.3 行为细节与限制
 

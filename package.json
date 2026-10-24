@@ -1,6 +1,6 @@
 {
 	"name": "pi-md-preview",
-	"version": "0.4.0",
+	"version": "0.5.0",
 	"description": "Pi extension: render Markdown files as polished web pages with an auto-exiting preview server",
 	"type": "module",
 	"keywords": ["pi-package", "markdown", "preview", "report"],

@@ -324,7 +324,7 @@ sequenceDiagram
     S-->>B: Document page + SSE stream
     B->>S: Selection question POST /doc/{id}/ask
     B->>S: or bottom chat POST /doc/{id}/chat
-    S-->>A: sendUserMessage (deliverAs: followUp)
+    S-->>A: sendUserMessage (deliverAs: followUp by default; steer optional)
     A->>A: Read repository files and answer
     A->>S: md_preview_reply
     S-->>B: SSE answer → reply card / chat message
@@ -345,7 +345,7 @@ sequenceDiagram
 2. **The browser can reach the preview URL**: reachable host, open port, firewall / security group allowing it (or an SSH tunnel).
 3. **The SSE stream is not broken**: intermediate proxies must not buffer it or use too-short idle timeouts, or questions will not appear and replies will be delayed.
 4. **The URL must carry the token**: the page, SSE, `/ask`, `/chat`, `/prefs`, and static assets all validate it.
-5. **The agent can receive the injected message and reply**: an idle session is woken immediately; a busy session queues the message until the current turn ends (`deliverAs: "followUp"`).
+5. **The agent can receive the injected message and reply**: an idle session is woken immediately. With the default **Follow up** mode, a busy session queues the message until the current turn ends; **Steering** instead injects it after the current tool batch completes.
 
 ### 4.3 Behavior details and limits
 
