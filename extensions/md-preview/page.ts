@@ -1294,7 +1294,9 @@ html[data-export] .toc {
 	padding: 12px 16px;
 	border-bottom: 1px solid var(--border);
 }
+.qa-modal-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
 .qa-modal-title { font-weight: 650; font-size: 0.95rem; }
+.qa-modal-note { color: var(--text-3); font-size: 0.78rem; font-weight: 400; }
 .qa-modal-close {
 	appearance: none;
 	border: 0;
@@ -1321,6 +1323,7 @@ html[data-export] .toc {
 .qa-modal-body { overflow: auto; padding: 12px 16px 16px; line-height: var(--line-height); }
 .qa-modal-body > :first-child { margin-top: 0.2em; }
 .qa-modal-body > :last-child { margin-bottom: 0.2em; }
+.qa-modal-body mark.qa-read { background: var(--mark-bg); color: inherit; border-radius: 2px; }
 .qa-wait { color: var(--text-3); display: flex; align-items: center; gap: 7px; padding: 4px 0; }
 .qa-pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: qaPulse 1.2s ease-in-out infinite; }
 @keyframes qaPulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
@@ -3260,11 +3263,11 @@ const PAGE_JS = `
 	}
 
 	/* Long-reply clamping + full-text modal.
-	   Answers longer than the CSS line clamp (-webkit-line-clamp: 6) get an
-	   ellipsis and a "view full text" button; clicking it opens a centered
-	   modal with the complete reply. Measurement trick: apply the clamp,
-	   compare scrollHeight (full content) against clientHeight (clamped
-	   viewport); a real difference means content is actually hidden. */
+   Answers longer than the CSS line clamp (-webkit-line-clamp: 6) get an
+   ellipsis and a "view full text" button; clicking it opens a centered
+   modal with the complete reply. Measurement trick: apply the clamp,
+   compare scrollHeight (full content) against clientHeight (clamped
+   viewport); a real difference means content is actually hidden. */
 	function updateCardClamp(card) {
 		var a = card.querySelector(".qa-a");
 		var btn = card.querySelector(".qa-more");
@@ -3286,12 +3289,122 @@ const PAGE_JS = `
 	var qaModalQuote = document.getElementById("qaModalQuote");
 	var qaModalBody = document.getElementById("qaModalBody");
 
-	function openQaModal(id) {
+	// Code headers are controls, not reply text. Excluding them keeps the same
+	// content offset before and after enhanceCode adds labels/copy buttons.
+	function answerContentText(node) {
+		var parent = node.parentNode;
+		return parent && parent.closest && parent.closest(".code-head")
+			? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+	}
+
+	/* Older engines without caret-from-point still get a line-accurate prefix.
+	   Range rects retain the geometry of clamped content even below the clip. */
+	function geometryAnswerPrefix(a, bottom) {
+		var walker = document.createTreeWalker(a, NodeFilter.SHOW_TEXT, answerContentText);
+		var range = document.createRange();
+		var total = 0, node;
+		while ((node = walker.nextNode())) {
+			var length = node.nodeValue.length;
+			if (!length) continue;
+			range.selectNodeContents(node);
+			var rects = range.getClientRects();
+			if (!rects.length) { total += length; continue; }
+			var first = rects[0], last = rects[rects.length - 1];
+			if (first.top >= bottom - 1) return total;
+			if (last.bottom <= bottom + 1) { total += length; continue; }
+			var low = 0, high = length;
+			while (low < high) {
+				var mid = Math.ceil((low + high) / 2);
+				range.setStart(node, 0);
+				range.setEnd(node, mid);
+				var prefixRects = range.getClientRects();
+				var endRect = prefixRects[prefixRects.length - 1];
+				if (endRect && endRect.top < bottom - 1) low = mid;
+				else high = mid - 1;
+			}
+			return total + low;
+		}
+		return total;
+	}
+
+	/* Return the UTF-16 text offset immediately after what the clamp actually
+	   showed. Hit-testing the last line also excludes glyphs replaced by the
+	   ellipsis; a character count derived from answerHtml cannot do that. */
+	function visibleAnswerPrefix(a) {
+		if (!a || !a.classList.contains("is-clamped")) return 0;
+		var bounds = a.getBoundingClientRect();
+		if (bounds.width <= 0 || bounds.height <= 0) return 0;
+		var caret = null;
+		try {
+			if (document.caretRangeFromPoint) {
+				caret = document.caretRangeFromPoint(bounds.right - 1, bounds.bottom - 1);
+			} else if (document.caretPositionFromPoint) {
+				var pos = document.caretPositionFromPoint(bounds.right - 1, bounds.bottom - 1);
+				if (pos) {
+					caret = document.createRange();
+					caret.setStart(pos.offsetNode, pos.offset);
+					caret.collapse(true);
+				}
+			}
+			if (caret && a.contains(caret.startContainer)) {
+				var prefix = document.createRange();
+				prefix.selectNodeContents(a);
+				prefix.setEnd(caret.startContainer, caret.startOffset);
+				var fragment = prefix.cloneContents();
+				var heads = fragment.querySelectorAll(".code-head");
+				for (var i = 0; i < heads.length; i++) heads[i].parentNode.removeChild(heads[i]);
+				return fragment.textContent.length;
+			}
+		} catch (err) { /* fall through to geometry */ }
+		return geometryAnswerPrefix(a, bounds.bottom);
+	}
+
+	/* Mark text nodes individually so a prefix can cross paragraphs, inline
+	   formatting and code spans without extracting or rebuilding block DOM. */
+	function markAnswerPrefix(rootEl, length) {
+		if (length <= 0) return;
+		var walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, answerContentText);
+		var nodes = [], node;
+		while ((node = walker.nextNode())) nodes.push(node);
+		var remaining = length;
+		for (var i = 0; i < nodes.length && remaining > 0; i++) {
+			node = nodes[i];
+			var take = Math.min(node.nodeValue.length, remaining);
+			remaining -= take;
+			// HTML marks are not valid SVG children; leave diagram labels intact.
+			if (!take || (node.parentNode && node.parentNode.namespaceURI === "http://www.w3.org/2000/svg")) continue;
+			if (take < node.nodeValue.length) node.splitText(take);
+			var mark = document.createElement("mark");
+			mark.className = "qa-read";
+			node.parentNode.insertBefore(mark, node);
+			mark.appendChild(node);
+		}
+	}
+
+	function openQaModal(id, answerEl) {
 		var entry = qaState[id];
 		if (!entry || !entry.answerHtml || !qaModal) return;
+		var readLength = answerEl ? visibleAnswerPrefix(answerEl) : 0;
+		// Clone the measured DOM, not just its character count: code enhancement may
+		// already have added buttons/spans to the card, and cloneNode keeps the same
+		// text-node offsets regardless of when that enhancement ran.
+		var fullAnswer = answerEl ? answerEl.cloneNode(true) : null;
 		qaModalQuote.innerHTML = '<span class="qa-label">' + esc(T.qaLabelQuote) + "</span>" + esc(entry.quote);
-		qaModalBody.innerHTML = entry.answerHtml;
+		qaModalBody.innerHTML = "";
+		if (fullAnswer) {
+			while (fullAnswer.firstChild) qaModalBody.appendChild(fullAnswer.firstChild);
+		} else {
+			qaModalBody.innerHTML = entry.answerHtml;
+		}
+		// cloneNode does not copy the copy-button listeners; recreate those buttons
+		// through enhanceCode instead of leaving cloned, inert controls in the modal.
+		var oldCopyButtons = qaModalBody.querySelectorAll(".copy-btn");
+		for (var i = 0; i < oldCopyButtons.length; i++) oldCopyButtons[i].parentNode.removeChild(oldCopyButtons[i]);
+		// Enhance first: syntax highlighting rebuilds unenhanced <code> DOM and
+		// would erase marks inserted before it. Header text is excluded above.
 		try { enhanceCode(qaModalBody); } catch (err) { /* copy buttons are a nice-to-have */ }
+		markAnswerPrefix(qaModalBody, readLength);
+		qaModalBody.scrollTop = 0;
 		qaModal.classList.add("show");
 		document.body.style.overflow = "hidden";
 	}
@@ -3314,7 +3427,7 @@ const PAGE_JS = `
 			var btn = e.target && e.target.closest ? e.target.closest(".qa-more") : null;
 			if (!btn || btn.hidden) return;
 			var card = btn.closest(".qa-card");
-			if (card) openQaModal(card.getAttribute("data-qa"));
+			if (card) openQaModal(card.getAttribute("data-qa"), card.querySelector(".qa-a"));
 		});
 	}
 
@@ -4591,7 +4704,10 @@ ${bodyHtml}
 <div class="qa-modal" id="qaModal">
 	<div class="qa-modal-card" role="dialog" aria-modal="true" aria-labelledby="qaModalTitle">
 		<div class="qa-modal-head">
-			<span class="qa-modal-title" id="qaModalTitle" data-i18n="qaFullTitle">${escapeHtml(t.qaFullTitle)}</span>
+			<div class="qa-modal-heading">
+				<span class="qa-modal-title" id="qaModalTitle" data-i18n="qaFullTitle">${escapeHtml(t.qaFullTitle)}</span>
+				<span class="qa-modal-note" data-i18n="qaReadHint">${escapeHtml(t.qaReadHint)}</span>
+			</div>
 			<button type="button" class="qa-modal-close" id="qaModalClose" aria-label="${escapeHtml(t.qaClose)}" title="${escapeHtml(t.qaClose)}" data-i18n-title="qaClose" data-i18n-aria="qaClose">&times;</button>
 		</div>
 		<div class="qa-modal-quote" id="qaModalQuote"></div>

@@ -103,6 +103,7 @@ export interface PageStrings {
 	qaPendingExport: string;
 	qaViewFull: string;
 	qaFullTitle: string;
+	qaReadHint: string;
 	qaClose: string;
 
 	// ---- stashed queues (batch ask / batch revise) ----
@@ -242,6 +243,7 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		qaPendingExport: "⏳ This question was still unanswered at export time",
 		qaViewFull: "View full text",
 		qaFullTitle: "Full reply",
+		qaReadHint: "Highlighted text was visible before expanding",
 		qaClose: "Close",
 
 		queueGroupAria: "Stashed batches",
@@ -371,6 +373,7 @@ export const STRINGS: Record<Lang, PageStrings> = {
 		qaPendingExport: "⏳ 导出时该提问尚未回复",
 		qaViewFull: "查看全文",
 		qaFullTitle: "完整回复",
+		qaReadHint: "色块标注展开前已显示的内容",
 		qaClose: "关闭",
 
 		queueGroupAria: "暂存的批次",
