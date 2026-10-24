@@ -9,6 +9,8 @@ English | [简体中文](README.zh-CN.md)
 [![pi.dev package page](https://img.shields.io/badge/pi.dev-package_page-8B5CF6)](https://pi.dev/packages/pi-md-preview)
 [![license](https://img.shields.io/npm/l/pi-md-preview)](LICENSE)
 
+**Website:** [md-preview.maphical.dev](https://md-preview.maphical.dev)
+
 A [Pi](https://github.com/earendil-works/pi-coding-agent) extension that renders agent-written Markdown files as polished, minimal, modern web pages and presents them in the browser.
 
 Built for structured-content delivery — **whenever the agent is about to output structured content (a report, research findings, a design document, a README, a multi-section article, a table, a list, a code example, …) longer than 150 characters, it must call this extension**: write the `.md` file, invoke one tool, and a beautifully typeset page opens in the browser. The agent does not need to keep working afterwards — once the user closes the tab, the preview server exits on its own.

@@ -9,6 +9,8 @@
 [![pi.dev 包页面](https://img.shields.io/badge/pi.dev-package_page-8B5CF6)](https://pi.dev/packages/pi-md-preview)
 [![license](https://img.shields.io/npm/l/pi-md-preview)](LICENSE)
 
+**官网：** [md-preview.maphical.dev](https://md-preview.maphical.dev)
+
 一个 [Pi](https://github.com/earendil-works/pi-coding-agent) 扩展：把 Agent 编写的 Markdown 文件渲染成专业、简洁、现代的 Web 页面，并在浏览器中呈现给用户阅读。
 
 面向「结构化内容呈现」场景——**只要 Agent 要输出的内容是结构化内容（报告、文档、多段落/多小节、表格、列表、代码示例等），且字符数大于 150，就必须调用本扩展**：写好 `.md` 文件后调用一次工具，浏览器自动打开排版好的页面；之后 Agent 无需保持工作，用户关闭标签页，预览服务自动退出。
