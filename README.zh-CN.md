@@ -11,7 +11,9 @@
 
 **官网：** [md-preview.maphical.dev](https://md-preview.maphical.dev)
 
-一个 [Pi](https://github.com/earendil-works/pi-coding-agent) 扩展：把 Agent 编写的 Markdown 文件渲染成专业、简洁、现代的 Web 页面，并在浏览器中呈现给用户阅读。
+一个 [Pi](https://github.com/earendil-works/pi-coding-agent) 扩展，同时支持 OMP：把 Agent 编写的 Markdown 文件渲染成专业、简洁、现代的 Web 页面，并在浏览器中呈现给用户阅读。
+
+**支持的宿主：** Pi 与 OMP。同一个 npm 包、同一份 TypeScript 源码——Pi 经 jiti 直接加载，OMP 经其 legacy Pi loader（Bun）加载。工具元数据保留 Pi 的 `promptSnippet` / `promptGuidelines` / `annotations`，同时附带 OMP 的 `loadMode` / `approval`；两者的安装命令见[下文](#从-npm-安装)。
 
 面向「结构化内容呈现」场景——**只要 Agent 要输出的内容是结构化内容（报告、文档、多段落/多小节、表格、列表、代码示例等），且字符数大于 150，就必须调用本扩展**：写好 `.md` 文件后调用一次工具，浏览器自动打开排版好的页面；之后 Agent 无需保持工作，用户关闭标签页，预览服务自动退出。
 
@@ -19,15 +21,15 @@
 
 | 需求 | 实现 |
 | --- | --- |
-| Agent 主动呈现 + 自动开浏览器 | `md_preview` 工具：本地起服务 → 自动用系统默认浏览器打开标签页（macOS `open` / Linux `xdg-open` / Windows `start`），跨标签页去重（已打开则复用）；`/md-preview <file> --host <ip>` 可指定标签页打开的 IP，`/md-preview-host <ip>` 可把该 host 持久化到用户级配置，所有 pi 实例自动使用 |
-| Agent 无需保持工作 | 工具立即返回；预览服务独立运行。用户关闭全部标签页 8 秒后（或浏览器标签从未打开 5 分钟后）服务自动退出；Pi 会话结束时兜底退出 |
-| 顶栏工作目录徽标 | 顶栏在文档路径旁显示打开该文档的 pi 会话的工作目录：只显示最末级目录名，鼠标悬停可看完整路径；窄屏（≤720px）下隐藏标签，只留目录名。同一文档被其他工作目录的会话重新打开时，徽标随之刷新 |
-| 选中文字向 Agent 提问 | 页面内选中正文 → 浮动「提问」按钮 → 提问注入 pi 会话唤醒 Agent → 回复经 `md_preview_reply` 工具实时推回页面：文档左侧出现回复卡片（原文 / 回复内容 / 回复时间），原文橙色高亮；超过 6 行的回复可点「查看全文」，弹窗高亮折叠态已显示的内容，方便从未高亮处继续阅读 |
+| Agent 主动呈现 + 自动开浏览器 | `md_preview` 工具：本地起服务 → 自动用系统默认浏览器打开标签页（macOS `open` / Linux `xdg-open` / Windows `start`），跨标签页去重（已打开则复用）；`/md-preview <file> --host <ip>` 可指定标签页打开的 IP，`/md-preview-host <ip>` 可把该 host 持久化到用户级配置，所有 Pi / OMP 实例自动使用 |
+| Agent 无需保持工作 | 工具立即返回；预览服务独立运行。用户关闭全部标签页 8 秒后（或浏览器标签从未打开 5 分钟后）服务自动退出；Pi / OMP 会话结束时兜底退出 |
+| 顶栏工作目录徽标 | 顶栏在文档路径旁显示打开该文档的 Pi / OMP 会话的工作目录：只显示最末级目录名，鼠标悬停可看完整路径；窄屏（≤720px）下隐藏标签，只留目录名。同一文档被其他工作目录的会话重新打开时，徽标随之刷新 |
+| 选中文字向 Agent 提问 | 页面内选中正文 → 浮动「提问」按钮 → 提问注入 Pi / OMP 会话唤醒 Agent → 回复经 `md_preview_reply` 工具实时推回页面：文档左侧出现回复卡片（原文 / 回复内容 / 回复时间），原文橙色高亮；超过 6 行的回复可点「查看全文」，弹窗高亮折叠态已显示的内容，方便从未高亮处继续阅读 |
 | 批量暂存提问 | 选中文字 → 「✦ 提问」→ 输入问题后点「暂存」把问题放进队列并关闭面板（顶栏「问答」按钮显示待发送条数）；之后点一次即经 `POST /doc/<id>/ask-batch` 把整批提交（URL 带 token），Agent 逐条调用 `md_preview_reply`，回复分别落在各自的问答卡片中 |
-| 页面底部与 Agent 对话 | 页面底部提供「与 Agent 对话」聊天区：无需选中文字，可就整篇文档提问；消息连同最近几轮对话摘要注入 pi 会话，Agent 经 `md_preview_reply` 回复后以「Agent」消息出现在聊天区（最新在上），刷新 / 重开页面后自动恢复 |
+| 页面底部与 Agent 对话 | 页面底部提供「与 Agent 对话」聊天区：无需选中文字，可就整篇文档提问；消息连同最近几轮对话摘要注入 Pi / OMP 会话，Agent 经 `md_preview_reply` 回复后以「Agent」消息出现在聊天区（最新在上），刷新 / 重开页面后自动恢复 |
 | 批量暂存修订 | 选中文字 → 「✎ 修订」→ 写下修订意见后「暂存」（顶栏「修订」按钮显示条数）；点一次经 `POST /doc/<id>/revise` 整批提交，Agent 直接更新 Markdown 文件、**不逐条回复消息**，完成后调用 `md_preview_revision_done`（`doc?`、`highlights?`），页面把改过的段落以色块短暂标记后淡出（约 3 秒） |
 | 等待行实时进度 | 文档里有待答的选中提问或聊天提问时，Agent 开始处理后等待行不再停在静态文案上，而是显示当前阶段：`正在思考…` → `正在调用 {tool}…` → `正在生成回答… · 已生成 {n} 字`；回答到达后，等待行被回答替换。推帧限流（约每秒最多 8 帧），仅在该文档仍有未答条目时推送，同一文档的所有标签页共享；错过一次重新渲染的标签页会通过 `init` 帧补上当前快照。到达浏览器的只有阶段、工具名、字数与不超过 80 字的正文尾部——不推送思考正文、工具参数或回答正文 |
-| 消息投递方式 | 顶栏齿轮设置弹窗可切换页面消息的投递方式：**Follow up**（默认）把提问或聊天消息排队等到本轮工作结束，**Steering** 则在当前工具批次跑完后立即注入，可中途纠偏而不打断正在生成的回答与正在执行的工具。Steering 会在 prompt 末尾附一段约定（继续此前未完成的工作、不自行开启下一轮、需要决策时可暂停询问）。该偏好是用户级设置，所有 pi 实例共享 |
+| 消息投递方式 | 顶栏齿轮设置弹窗可切换页面消息的投递方式：**Follow up**（默认）把提问或聊天消息排队等到本轮工作结束，**Steering** 则在当前工具批次跑完后立即注入，可中途纠偏而不打断正在生成的回答与正在执行的工具。Steering 会在 prompt 末尾附一段约定（继续此前未完成的工作、不自行开启下一轮、需要决策时可暂停询问）。该偏好是用户级设置，所有 Pi / OMP 实例共享 |
 | Web 页面渲染 Markdown | 基于 `marked` 的 GFM 渲染器：标题、表格、围栏代码（25+ 语言高亮）、引用块（含 `[!NOTE]` … `[!CAUTION]` 提示框）、任务列表、脚注、图片、自动链接 |
 | Mermaid 图表 | `mermaid` 语言围栏代码块渲染为图表：前端动态加载预览服务同源提供的 mermaid 运行时，自动绘制流程图、时序图等 |
 | 双语界面（中 / 英） | Agent 启动预览时通过必填的 `ui_lang` 工具参数显式选择页面 UI 语言（根据用户语言选定）；页面右上角提供 中/EN 切换控件，读者可随时覆盖（`localStorage` 记忆） |
@@ -46,19 +48,33 @@
 
 包发布在 npm：[`pi-md-preview`](https://www.npmjs.com/package/pi-md-preview)；Pi 官网上也有对应的包页面（含 manifest 与 README）：[`pi.dev/packages/pi-md-preview`](https://pi.dev/packages/pi-md-preview)。
 
+**Pi**：
+
 ```bash
 pi install npm:pi-md-preview@0.5.0
 ```
 
-安装后重启 pi 会话即可。只想临时试用一次、不写入 settings：
+安装后重启 Pi 会话即可。只想临时试用一次、不写入 settings：
 
 ```bash
 pi -e npm:pi-md-preview
 ```
 
+**OMP**（同一个包、同一份 TypeScript 源码）：
+
+```bash
+omp install npm:pi-md-preview@0.5.0
+```
+
+安装后重启 OMP 会话即可。只想临时试用一次、不安装，直接传路径（OMP 的 `-e` 不接受 npm 规格）：
+
+```bash
+omp --extension ./extensions/md-preview/index.ts
+```
+
 ### 以本地包安装（开发调试）
 
-clone 本仓库后：
+clone 本仓库后，**Pi**：
 
 ```bash
 pi install ./pi-extension-md-preview
@@ -68,6 +84,19 @@ pi install ./pi-extension-md-preview
 
 ```bash
 pi --extension ./extensions/md-preview/index.ts
+```
+
+**OMP** 安装同一份本地包：
+
+```bash
+omp install ./pi-extension-md-preview
+```
+
+或临时加载（可传目录或入口文件）：
+
+```bash
+omp -e .
+omp --extension ./extensions/md-preview/index.ts
 ```
 
 ### 在会话中使用
@@ -98,9 +127,9 @@ pi --extension ./extensions/md-preview/index.ts
 
 `--host` 只替换打开/分享 URL 的 host，端口与 `?token=` 访问令牌原样保留，详见下文「监听地址与访问 Token」。
 
-浏览器 host 在每次预览调用时解析，优先级为 **显式 `--host` > 持久化的 `browserHost` > 服务绑定地址**（通配符绑定时为 `127.0.0.1`）。持久化值在调用时读取，所以**已经在运行的 pi 实例在下一次预览就会生效**——不需要 `/reload`，也不需要重启。
+浏览器 host 在每次预览调用时解析，优先级为 **显式 `--host` > 持久化的 `browserHost` > 服务绑定地址**（通配符绑定时为 `127.0.0.1`）。持久化值在调用时读取，所以**已经在运行的 Pi / OMP 实例在下一次预览就会生效**——不需要 `/reload`，也不需要重启。
 
-### 独立 Demo（无需 Pi 会话）
+### 独立 Demo（无需 Agent 会话）
 
 ```bash
 npm install
@@ -131,7 +160,7 @@ Agent 写 .md ──► md_preview 工具 ──► 本地预览服务（127.0.0
                         │  sendBeacon：标签页关闭 → viewer 计数 -1
                         ▼
    全部标签页关闭 8s 后服务自动退出（未打开过则 5 分钟后退出）
-   Pi 会话 session_shutdown → 服务兜底退出
+   Pi / OMP 会话 session_shutdown → 服务兜底退出
 ```
 
 - **进程生命周期**：服务按需惰性启动（首次调用工具 / 命令时），不阻塞工具返回；退出判定在每 3 秒的轻量巡检中完成，无外部依赖。
@@ -182,7 +211,7 @@ Pi 通过 jiti 直接加载 TypeScript 源码，无需构建步骤；`tsconfig.j
 
 | 环境变量 | 作用 |
 | --- | --- |
-| `MD_PREVIEW_BIND` | 绑定地址，默认 `127.0.0.1`。设为 `0.0.0.0`（或具体网卡 IP）可供其他机器访问。**在预览服务启动时（会话首次预览）读取**；会话中途改动需重启 pi 会话才生效。它只决定**绑定**地址；浏览器打开的 host 由持久化设置（`/md-preview-host`）与 `--host` 决定。旧名 `MD_PREVIEW_HOST` 仍作为已弃用别名兼容，两者同时设置时以 `MD_PREVIEW_BIND` 为准 |
+| `MD_PREVIEW_BIND` | 绑定地址，默认 `127.0.0.1`。设为 `0.0.0.0`（或具体网卡 IP）可供其他机器访问。**在预览服务启动时（会话首次预览）读取**；会话中途改动需重启 Pi / OMP 会话才生效。它只决定**绑定**地址；浏览器打开的 host 由持久化设置（`/md-preview-host`）与 `--host` 决定。旧名 `MD_PREVIEW_HOST` 仍作为已弃用别名兼容，两者同时设置时以 `MD_PREVIEW_BIND` 为准 |
 | `MD_PREVIEW_TOKEN` | 固定访问令牌，覆盖启动时生成的随机 URL-safe token（便于远程使用固定链接）；所有页面 URL 均携带 `?token=` |
 | `MD_PREVIEW_THEME` | 初始主题提示 `system` / `light` / `dark`（仅在用户未手动选择主题前生效） |
 | `MD_PREVIEW_LANG` | 兜底 UI 语言 `en` / `zh`（供 `/md-preview` 命令使用；`md_preview` 工具始终显式传 `ui_lang`） |
@@ -204,12 +233,12 @@ MD_PREVIEW_BIND=0.0.0.0 pi
 ```
 
 - `--host <ip>` 只决定浏览器与该分享 URL 使用哪个 host；端口与 `?token=` 始终与服务端一致。支持 `--host <ip>`、`--host=<ip>`、`--host "<ip>"` 三种写法，放在文件名前后均可。
-- `/md-preview-host <ip|hostname>` 把浏览器 host 持久化到用户级配置：凡未指定 `--host` 的预览都使用它，本实例和其他 pi 实例一律生效（调用时读取）。`/md-preview-host` 无参时显示持久化值、下次预览实际生效值与来源、配置文件路径；`/md-preview-host --clear` 清除。持久化 host 超出监听范围时仍可使用，会给出下方同样的警告。
+- `/md-preview-host <ip|hostname>` 把浏览器 host 持久化到用户级配置：凡未指定 `--host` 的预览都使用它，本实例和其他 Pi / OMP 实例一律生效（调用时读取）。`/md-preview-host` 无参时显示持久化值、下次预览实际生效值与来源、配置文件路径；`/md-preview-host --clear` 清除。持久化 host 超出监听范围时仍可使用，会给出下方同样的警告。
 - 绑定 `0.0.0.0`（或 `::`）且既未指定 `--host` 也未持久化 host 时，浏览器以 `127.0.0.1` 打开（本地阅读视角）；远程读者需 `--host <对端可达的 IP>`（或自行替换 IP），并保留 `?token=`。
-- `--host` 指定的地址不在监听范围内（例如监听 `127.0.0.1` 却要求局域网 IP）时仍会预览，但命令输出与通知会给出警告，提示用 `MD_PREVIEW_BIND=0.0.0.0` 重启 pi：预览服务是**会话级单例**，中途改环境变量不会让已在运行的服务重新绑定。
+- `--host` 指定的地址不在监听范围内（例如监听 `127.0.0.1` 却要求局域网 IP）时仍会预览，但命令输出与通知会给出警告，提示用 `MD_PREVIEW_BIND=0.0.0.0` 重启 Pi 或 OMP：预览服务是**会话级单例**，中途改环境变量不会让已在运行的服务重新绑定。
 - `--host` 写法错误（缺值、重复，或写成 `http://host` 这类 URL）会直接报错，**不会打开浏览器**。
 
-> 完整远程案例（pi 在远程服务器、浏览器在本地、含 Agent 对话链路与 SSH 隧道方案）：见 [远程访问指南](docs/remote-access.zh-CN.md)。
+> 完整远程案例（Pi 或 OMP 在远程服务器、浏览器在本地、含 Agent 对话链路与 SSH 隧道方案）：见 [远程访问指南](docs/remote-access.zh-CN.md)。
 
 ### 用户级偏好持久化
 
@@ -238,7 +267,7 @@ MD_PREVIEW_BIND=0.0.0.0 pi
 
 ### 选中文字向 Agent 提问
 
-阅读时选中任意正文，点浮动「✦ 提问」按钮输入问题（Enter 发送）。服务端创建问答记录并广播 SSE `ask` 事件，扩展随即把提问以用户消息形式注入 pi 会话（`deliverAs` 跟随页面的投递方式偏好：默认 `followUp`，空闲立即唤起、忙碌排队到当前回合结束；选 Steering 则在当前工具批次结束后注入）。Agent 结合仓库里的相关文件作答后，调用 `md_preview_reply` 工具：
+阅读时选中任意正文，点浮动「✦ 提问」按钮输入问题（Enter 发送）。服务端创建问答记录并广播 SSE `ask` 事件，扩展随即把提问以用户消息形式注入 Pi / OMP 会话（`deliverAs` 跟随页面的投递方式偏好：默认 `followUp`，空闲立即唤起、忙碌排队到当前回合结束；选 Steering 则在当前工具批次结束后注入）。Agent 结合仓库里的相关文件作答后，调用 `md_preview_reply` 工具：
 
 ```jsonc
 // 工具调用（question_id 省略时回复最早未回复的提问）
@@ -297,7 +326,7 @@ MD_PREVIEW_BIND=0.0.0.0 pi
 - 单批最多 20 条，第 21 条在暂存时即被拒绝，队列因此总能整批发送；页面没有逐个删除或清空队列的控件。
 - 修订高亮的定位依赖纯文本短语：跨行内元素的短语（或与改后正文已不一致的短语）不会产生标记，工具的返回里会列出未命中的条目。
 - 投递方式是**用户级**设置，不按标签页或文档隔离，且页面无法判断 Agent 是否空闲：Agent 空闲时发送 **Steering** 消息仍会开启新的一轮。宿主或 steering 队列不可用时，消息仍以 **Follow up** 送达，既不带那段约定，页面也没有任何提示；本轮一直不结束时排队的 `followUp` 消息会一直等待；偏好写入失败时选中态不会回滚。
-- 问答进度是**文档级**而非逐条隔离：pi 事件不携带文档 id，所以只要该文档还有待答条目，就会显示 Agent 当前阶段——即使这一回合正在处理别的事情。它只是阶段指示，不是日志：没有历史、没有百分比，也没有取消控件。
+- 问答进度是**文档级**而非逐条隔离：宿主事件不携带文档 id，所以只要该文档还有待答条目，就会显示 Agent 当前阶段——即使这一回合正在处理别的事情。它只是阶段指示，不是日志：没有历史、没有百分比，也没有取消控件。
 
 ## 开发
 

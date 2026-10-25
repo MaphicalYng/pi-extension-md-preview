@@ -341,7 +341,7 @@ function App() {
           <div className="install-card">
             <div className="install-grid-pattern" />
             <div className="install-copy"><span className="section-eyebrow">{t.install.eyebrow}</span><h2>{t.install.titleA}<br />{t.install.titleB}</h2><p>{t.install.descriptionA}<br />{t.install.descriptionB}</p><div className="install-links"><a href={GITHUB} target="_blank" rel="noreferrer"><Github size={17} /> {t.install.github} <ArrowUpRight size={15} /></a><a href={`https://github.com/MaphicalYng/pi-extension-md-preview/blob/main/${lang === "zh" ? "README.zh-CN.md" : "README.md"}`} target="_blank" rel="noreferrer">{t.install.docs} <ArrowRight size={15} /></a></div></div>
-            <div className="install-action"><span>{t.install.terminal}</span><CopyCommand dark t={t} /><p><Check size={13} /> {t.install.trial}</p><code className="trial-command">pi -e npm:pi-md-preview</code></div>
+            <div className="install-action"><span>{t.install.terminal}</span><CopyCommand dark t={t} /><p><Check size={13} /> {t.install.trial}</p><code className="trial-command trial-command--block">pi -e npm:pi-md-preview</code><span className="install-omp">{t.install.ompTerminal}</span><code className="trial-command trial-command--block">omp install npm:pi-md-preview@0.5.0</code><p><Check size={13} /> {t.install.ompTrial}</p><code className="trial-command trial-command--block">omp -e ./pi-extension-md-preview</code></div>
           </div>
         </section>
       </main>

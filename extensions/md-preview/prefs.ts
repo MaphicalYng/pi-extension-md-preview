@@ -247,7 +247,12 @@ export function savePrefsDebounced(patch: Partial<UserPrefs>, file: string = pre
 	if (!exitHookRegistered) {
 		exitHookRegistered = true;
 		process.once("exit", () => {
-			if (pendingPatch && pendingFile) savePrefs(pendingPatch, pendingFile);
+			if (!pendingPatch || !pendingFile) return;
+			try {
+				savePrefs(pendingPatch, pendingFile);
+			} catch {
+				/* the process is exiting; a failed flush must not turn into an uncaught exception */
+			}
 		});
 	}
 	if (!saveTimer) {
@@ -257,7 +262,12 @@ export function savePrefsDebounced(patch: Partial<UserPrefs>, file: string = pre
 			const target = pendingFile ?? file;
 			pendingPatch = null;
 			pendingFile = null;
-			if (flush) savePrefs(flush, target);
+			if (!flush) return;
+			try {
+				savePrefs(flush, target);
+			} catch {
+				/* a background prefs write failure is reported by the page's own save path, never fatal */
+			}
 		}, 200);
 		saveTimer.unref?.();
 	}

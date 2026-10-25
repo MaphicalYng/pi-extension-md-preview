@@ -2,23 +2,25 @@
 
 English | [简体中文](remote-access.zh-CN.md)
 
-> Use case: pi runs on a remote server (usually Linux, headless), while your browser runs on your laptop. The goal is to get three things working end to end:
+> Use case: Pi or OMP runs on a remote server (usually Linux, headless), while your browser runs on your laptop. The goal is to get three things working end to end:
 >
 > 1. Agent-written Markdown is rendered into a web page on the remote server;
 > 2. You can open the preview link in your local browser;
 > 3. You can **select text and ask the Agent** in the page, or use the **chat area at the bottom of the page** for a multi-turn conversation.
 >
 > This guide explains the two things around `/md-preview-host` — **where the service listens** and **which host the URL uses** — and gives a remote walkthrough you can follow step by step.
+>
+> Pi and OMP share the same source and the same behavior here: commands below are shown as `pi`, substitute `omp` when running under OMP. The env vars, `/md-preview*` commands, preview server and page are identical.
 
 ## 0. TL;DR
 
 | What you want | How to do it |
 | --- | --- |
-| Make the remote preview server reachable from other machines | Set `MD_PREVIEW_BIND=0.0.0.0` (or a LAN IP) before starting pi, then restart pi |
+| Make the remote preview server reachable from other machines | Set `MD_PREVIEW_BIND=0.0.0.0` (or a LAN IP) before starting Pi or OMP, then restart it |
 | Make links / the auto-opened browser point at the right IP | Persist with `/md-preview-host <ip or hostname>`; or per call: `/md-preview <file> --host <ip>` |
 | View remotely without exposing a port | Keep the default `127.0.0.1` bind and forward a local port with `ssh -L` |
-| Pin the access token | Set `MD_PREVIEW_TOKEN=<long random string>` before starting pi |
-| Use selection Q&A / bottom chat remotely | No extra setup: both share the preview URL, port and token; just keep the pi session running |
+| Pin the access token | Set `MD_PREVIEW_TOKEN=<long random string>` before starting Pi or OMP |
+| Use selection Q&A / bottom chat remotely | No extra setup: both share the preview URL, port and token; just keep the Pi / OMP session running |
 
 The two most common traps:
 
@@ -45,7 +47,7 @@ http://<browser host>:<random port>/doc/<doc-id>?token=<access token>
 - Env var: `MD_PREVIEW_BIND`, default `127.0.0.1`.
 - Common values: `0.0.0.0` (all interfaces), `::` (all IPv6 interfaces), a specific NIC IP such as `192.0.2.10`.
 - Read at: **preview server startup** (the first preview or `/md-preview` in the session).
-- The preview server is a **per-session singleton**: once it has started, its bind address is fixed. Changing the env var mid-session will not rebind the running server; restart pi to start it at the new address.
+- The preview server is a **per-session singleton**: once it has started, its bind address is fixed. Changing the env var mid-session will not rebind the running server; restart the host (Pi or OMP) to start it at the new address.
 - It only decides where the service listens; it does not decide which host appears in the URL.
 
 > This variable was renamed from `MD_PREVIEW_HOST`. The old name is still accepted as a deprecated alias, and `MD_PREVIEW_BIND` wins when both are set.
@@ -53,7 +55,7 @@ http://<browser host>:<random port>/doc/<doc-id>?token=<access token>
 ### 1.2 Browser host
 
 - Per call: `/md-preview <file> --host <ip-or-hostname>`.
-- Persisted: `/md-preview-host <ip-or-hostname>` writes the user-level config file, shared by all pi instances. It is read on every preview call and **takes effect from the next preview**; no restart is needed.
+- Persisted: `/md-preview-host <ip-or-hostname>` writes the user-level config file, shared by all Pi / OMP instances. It is read on every preview call and **takes effect from the next preview**; no restart is needed.
 - It only rewrites the host of the URL; **the port and token are preserved**.
 - The auto-opened browser and the printed link share the same URL, so this host decides both "which address is opened" and "which address is written into the copied link".
 - Fallback: with neither a per-call `--host` nor a persisted value, the bind address is used; however, **a wildcard bind (`0.0.0.0` / `::`) falls back to loopback `127.0.0.1`**, because a wildcard address cannot be a browser target.
@@ -68,7 +70,7 @@ flowchart LR
         B[Browser]
     end
     subgraph REMOTE["Remote server 192.0.2.10"]
-        P[pi process]
+        P[Pi / OMP process]
         S["Preview HTTP server<br/>random port + token"]
         A[Agent session]
         P --- S
@@ -98,7 +100,7 @@ Accepted values:
 Output after saving looks like:
 
 ```text
-Browser host saved: `192.0.2.10` — every preview (this and any other pi instance) opens at this host from its next preview on.
+Browser host saved: `192.0.2.10` — every preview (this and any other Pi / OMP instance) opens at this host from its next preview on.
 
 An explicit `--host` on `/md-preview` still overrides this per call; `/md-preview-host --clear` removes it.
 ```
@@ -113,13 +115,13 @@ Markdown preview browser host:
 - Settings file: ~/.config/md-preview/settings.json
 
 Precedence: explicit `/md-preview <file> --host <ip>` > persisted setting > server bind address.
-The setting is read at every preview call, so all pi instances use it from their next preview on.
+The setting is read at every preview call, so all Pi / OMP instances use it from their next preview on.
 ```
 
 A few points:
 
-- The value lives in the user-level file `$XDG_CONFIG_HOME/md-preview/settings.json` (`~/.config/md-preview/settings.json` when `XDG_CONFIG_HOME` is unset) and is **shared by all pi instances of the same account**.
-- The preview page **cannot** change this value (`POST /prefs` accepts only theme / background / font scale / line height); only the command in a pi session can set it.
+- The value lives in the user-level file `$XDG_CONFIG_HOME/md-preview/settings.json` (`~/.config/md-preview/settings.json` when `XDG_CONFIG_HOME` is unset) and is **shared by all Pi / OMP instances of the same account**.
+- The preview page **cannot** change this value (`POST /prefs` accepts only theme / background / font scale / line height); only the command in a Pi / OMP session can set it.
 - If the target host is outside the listen address, the setting still succeeds but carries the same warning as `--host` (see §2.4).
 
 ### 2.2 `/md-preview --host`
@@ -156,36 +158,38 @@ When the target host is clearly outside the listen address (for example, bound t
 
 ```text
 the preview server is listening on 127.0.0.1 only, so http://192.0.2.10:52814/... may not be reachable.
-Set MD_PREVIEW_BIND=0.0.0.0 (or MD_PREVIEW_BIND=192.0.2.10) and restart pi to serve that address.
+Set MD_PREVIEW_BIND=0.0.0.0 (or MD_PREVIEW_BIND=192.0.2.10) and restart the host (Pi or OMP) to serve that address.
 The preview server is a per-session singleton: it keeps its original bind even if MD_PREVIEW_BIND changes mid-session - the new value only takes effect after a restart.
 ```
 
-When you see it, first confirm whether `MD_PREVIEW_BIND` really took effect, then restart pi.
+When you see it, first confirm whether `MD_PREVIEW_BIND` really took effect, then restart the host.
 
-## 3. Case: pi on a remote server, browser on your laptop
+## 3. Case: Pi or OMP on a remote server, browser on your laptop
 
 ### 3.1 Assumptions
 
 - Remote server: Linux, IP `192.0.2.10` (documentation range), headless;
-- The pi session, repository, and agent all live on the server, project directory `~/project`;
+- The Pi / OMP session, repository, and agent all live on the server, project directory `~/project`;
 - Your laptop and the server are on the same LAN / VPN; the browser runs on the laptop;
 - The port `52814`, document id `d1`, and token below are examples; always use the actual output.
 
 ### 3.2 Option 1: Direct LAN / VPN access (fastest)
 
-**Step 1: start pi on a reachable address.**
+**Step 1: start Pi or OMP on a reachable address.**
 
 ```bash
 # after SSH-ing into the remote server
 export MD_PREVIEW_BIND=0.0.0.0
 export MD_PREVIEW_TOKEN="$(openssl rand -hex 24)"   # optional: pin the token
 pi
+# or, under OMP:
+omp
 ```
 
 - `0.0.0.0` listens on all interfaces; to expose only the LAN NIC, use `MD_PREVIEW_BIND=192.0.2.10` (the IP must exist on the server).
-- These variables are read when the preview server starts; if you have already opened a preview, restart pi.
+- These variables are read when the preview server starts; if you have already opened a preview, restart the host (Pi or OMP).
 
-**Step 2: tell pi which address the browser should use.**
+**Step 2: tell Pi or OMP which address the browser should use.**
 
 ```text
 /md-preview-host 192.0.2.10
@@ -231,7 +235,7 @@ Markdown preview is ready: **Q3 Research Report**
 **Step 4: read in the local browser and talk to the Agent.**
 
 - The preview page loads normally; TOC navigation, code highlighting, theme switching and so on all run in your local browser.
-- **Selection Q&A**: select any paragraph → click the floating "✦ Ask" button → type a question and press Enter. The page first shows a pending reply card; the remote pi session receives the injected message, the agent reads the relevant files and calls `md_preview_reply`, and the reply card appears beside the document in real time with the quoted text highlighted in orange.
+- **Selection Q&A**: select any paragraph → click the floating "✦ Ask" button → type a question and press Enter. The page first shows a pending reply card; the remote Pi / OMP session receives the injected message, the agent reads the relevant files and calls `md_preview_reply`, and the reply card appears beside the document in real time with the quoted text highlighted in orange.
 - **Bottom chat**: scroll to the "Chat with the Agent" area at the end of the document and type a question about the whole document (no selection needed). The message is injected into the remote session together with a summary of recent chat turns; the agent's reply appears as an "Agent" message in the chat area (newest first).
 - Both paths use the **same URL, port, and token** as the preview; no extra port, command, or WebSocket is needed.
 - The initial UI language follows the `ui_lang` passed by the agent to `md_preview` (the `/md-preview` command uses `MD_PREVIEW_LANG` > `en`); readers can switch between 中 / EN from the top-right corner at any time.
@@ -251,6 +255,7 @@ No listen-address change, no firewall change; the server keeps its default loopb
 
 ```bash
 pi    # keep the default MD_PREVIEW_BIND=127.0.0.1
+# or: omp
 ```
 
 ```text
@@ -283,7 +288,7 @@ http://127.0.0.1:52814/doc/d1?token=…
   The token, path, and query string stay the same; only the origin changes (`localStorage` theme/language memory does not carry over, but server-side user preferences still apply).
 - Advantages: no `MD_PREVIEW_BIND`, no firewall change, traffic encrypted by SSH, and the service still listens on loopback only.
 - Note: the preview server gets a new port when it restarts, so the tunnel must be recreated for the new port. The tunnel itself can stay up, but the URL on the old port stops working once the server exits.
-- Agent chat also goes through this tunnel: browser → SSH → remote server → inject into the remote pi session, with SSE replies coming back the same way.
+- Agent chat also goes through this tunnel: browser → SSH → remote server → inject into the remote Pi / OMP session, with SSE replies coming back the same way.
 
 ### 3.4 Option 3: Reverse proxy / public domain (advanced, with care)
 
@@ -341,7 +346,7 @@ sequenceDiagram
 
 ### 4.2 Prerequisites for remote use
 
-1. **The pi session must still be running**: the preview server and message injection both live in that process; if pi exits, the page goes away.
+1. **The Pi / OMP session must still be running**: the preview server and message injection both live in that process; if it exits, the page goes away.
 2. **The browser can reach the preview URL**: reachable host, open port, firewall / security group allowing it (or an SSH tunnel).
 3. **The SSE stream is not broken**: intermediate proxies must not buffer it or use too-short idle timeouts, or questions will not appear and replies will be delayed.
 4. **The URL must carry the token**: the page, SSE, `/ask`, `/chat`, `/prefs`, and static assets all validate it.
@@ -363,7 +368,7 @@ sequenceDiagram
 - The project has **no built-in TLS**. For public access, use an SSH tunnel, a VPN, or terminate HTTPS at a reverse proxy.
 - `0.0.0.0` listens on every reachable interface (including a public NIC). Prefer a specific LAN IP when possible.
 - The page itself makes no external network requests (no CDN, no external assets), but the token can end up in browser history, terminal output, and proxy logs.
-- On a shared server, each pi session has its own random port and token; `browserHost` is user-level config, so accounts do not affect each other.
+- On a shared server, each Pi / OMP session has its own random port and token; `browserHost` is user-level config, so accounts do not affect each other.
 
 ## 6. Troubleshooting
 
@@ -371,11 +376,11 @@ sequenceDiagram
 | --- | --- | --- |
 | `401 Missing or invalid access token` | URL missing the token / token truncated / proxy stripped the query | Copy the full URL; check that the proxy preserves `?token=` |
 | `ERR_CONNECTION_REFUSED` | Server bound to loopback only, exited, port blocked, or host unreachable | Check `MD_PREVIEW_BIND`; confirm the server is running; allow the port or use an SSH tunnel; preview again after the server exits |
-| Output contains `listening on 127.0.0.1 only … may not be reachable` | Target host outside the bind range | Restart pi with `MD_PREVIEW_BIND=0.0.0.0` (or the target IP); remember the per-session singleton |
-| Changed `MD_PREVIEW_BIND` but nothing changed | The preview server is already running and its bind is fixed; env vars belong to the pi process | Restart pi with the new environment |
+| Output contains `listening on 127.0.0.1 only … may not be reachable` | Target host outside the bind range | Restart the host (Pi or OMP) with `MD_PREVIEW_BIND=0.0.0.0` (or the target IP); remember the per-session singleton |
+| Changed `MD_PREVIEW_BIND` but nothing changed | The preview server is already running and its bind is fixed; env vars belong to the host process | Restart Pi or OMP with the new environment |
 | `/md-preview-host` is set but the URL is still `127.0.0.1` | Setting did not save, a per-call `--host` overrode it, or you are looking at an old link | Run `/md-preview-host` to see persisted / effective / source; preview again |
 | Auto-open failed / no window | Headless remote server | Normal; open the printed Page URL manually |
-| Page opens but questions do nothing | SSE buffered by a proxy, session exited, or message queued | Check the proxy config; confirm the pi session is alive; see whether the card is pending |
+| Page opens but questions do nothing | SSE buffered by a proxy, session exited, or message queued | Check the proxy config; confirm the Pi / OMP session is alive; see whether the card is pending |
 | Question is recorded but no reply appears | Agent did not call `md_preview_reply`, or `question_id` does not match | Ask the agent to reply again; omit `question_id` to answer the earliest unanswered question |
 | Reopening after closing the tab gives 404 / connection failure | Server exited by policy (8 s / 5 min) | Preview again; Q&A history is lost |
 | `--host` errors or has no effect | `http://` / a path / duplicates / a missing value are rejected; a port is ignored | Pass a bare IP / hostname; let the server supply the port |

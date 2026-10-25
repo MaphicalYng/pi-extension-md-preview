@@ -89,6 +89,10 @@ pi install npm:pi-md-preview@0.5.0
 
 # Try it once without installing
 pi -e npm:pi-md-preview
+
+# OMP:
+omp install npm:pi-md-preview@0.5.0
+omp -e ./pi-extension-md-preview
 ```
 
 JSON:
@@ -141,6 +145,7 @@ Relative-path images are served safely as static assets:
 1. Installation
    - `pi install npm:pi-md-preview` (npm package)
    - `pi install ./pi-extension-md-preview` (local checkout)
+   - `omp install npm:pi-md-preview` / `omp install ./pi-extension-md-preview` (OMP)
 2. Usage
    - Agent calls the `md_preview` tool proactively (recommended)
    - User types the `/md-preview <file.md>` command

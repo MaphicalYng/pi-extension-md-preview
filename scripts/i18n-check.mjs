@@ -47,7 +47,7 @@ writeFileSync(join(buildDir, "package.json"), '{"type":"commonjs"}\n', "utf8");
 
 const require = createRequire(import.meta.url);
 const { normalizeUiLang, resolveUiLang } = require(join(buildDir, "prefs.js"));
-const { ensureServer } = require(join(buildDir, "server.js"));
+const { createPreviewServerManager } = require(join(buildDir, "server.js"));
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -129,7 +129,8 @@ function docUrl(handle, sub = "", params) {
 	return url.toString();
 }
 
-const server = await ensureServer();
+const servers = createPreviewServerManager();
+const server = await servers.ensure();
 
 /* 1. normalizeUiLang ------------------------------------------------------- */
 const normCases = [

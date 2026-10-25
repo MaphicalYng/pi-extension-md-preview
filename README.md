@@ -11,7 +11,9 @@ English | [简体中文](README.zh-CN.md)
 
 **Website:** [md-preview.maphical.dev](https://md-preview.maphical.dev)
 
-A [Pi](https://github.com/earendil-works/pi-coding-agent) extension that renders agent-written Markdown files as polished, minimal, modern web pages and presents them in the browser.
+A [Pi](https://github.com/earendil-works/pi-coding-agent) extension that also runs on OMP: it renders agent-written Markdown files as polished, minimal, modern web pages and presents them in the browser.
+
+**Supported hosts:** Pi and OMP. Same npm package, same TypeScript sources — Pi loads them through jiti, OMP through its legacy Pi loader (Bun). Tool metadata keeps Pi's `promptSnippet` / `promptGuidelines` / `annotations` and adds OMP's `loadMode` / `approval` hints alongside; install commands for both are [below](#install-from-npm).
 
 Built for structured-content delivery — **whenever the agent is about to output structured content (a report, research findings, a design document, a README, a multi-section article, a table, a list, a code example, …) longer than 150 characters, it must call this extension**: write the `.md` file, invoke one tool, and a beautifully typeset page opens in the browser. The agent does not need to keep working afterwards — once the user closes the tab, the preview server exits on its own.
 
@@ -19,15 +21,15 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 
 | Capability | Implementation |
 | --- | --- |
-| Agent-initiated preview + auto-open browser | The `md_preview` tool starts a local server and opens the page in the system default browser (macOS `open` / Linux `xdg-open` / Windows `start`), de-duplicating across tabs (an already-open tab is reused); `/md-preview <file> --host <ip>` can pick which IP the tab opens with, and `/md-preview-host <ip>` persists that choice in the user-level config so every pi instance opens at it |
-| No babysitting | The tool returns immediately and the server runs on its own. It exits 8 s after the last tab closes (or 5 min after start if no tab ever opened), with a final safety exit when the Pi session shuts down |
-| Workspace badge in the top bar | Next to the document path, the top bar shows the working directory of the pi session that opened the document: the last path segment only, with the full path on hover. Below 720px the label is hidden and the directory name stays. Reopening the same document from a session with a different working directory refreshes the badge |
-| Ask the agent about selected text | Select text in the page → floating "Ask" button → the question is injected into the Pi session to wake the agent → the answer is pushed back live via the `md_preview_reply` tool as a reply card (quote / answer / timestamp) beside the document, with the quoted text highlighted in orange. Replies longer than six lines offer **View full text**; the modal highlights the portion already visible in the clamped card so reading can resume at the first unhighlighted text |
+| Agent-initiated preview + auto-open browser | The `md_preview` tool starts a local server and opens the page in the system default browser (macOS `open` / Linux `xdg-open` / Windows `start`), de-duplicating across tabs (an already-open tab is reused); `/md-preview <file> --host <ip>` can pick which IP the tab opens with, and `/md-preview-host <ip>` persists that choice in the user-level config so every Pi / OMP instance opens at it |
+| No babysitting | The tool returns immediately and the server runs on its own. It exits 8 s after the last tab closes (or 5 min after start if no tab ever opened), with a final safety exit when the Pi / OMP session shuts down |
+| Workspace badge in the top bar | Next to the document path, the top bar shows the working directory of the Pi / OMP session that opened the document: the last path segment only, with the full path on hover. Below 720px the label is hidden and the directory name stays. Reopening the same document from a session with a different working directory refreshes the badge |
+| Ask the agent about selected text | Select text in the page → floating "Ask" button → the question is injected into the Pi / OMP session to wake the agent → the answer is pushed back live via the `md_preview_reply` tool as a reply card (quote / answer / timestamp) beside the document, with the quoted text highlighted in orange. Replies longer than six lines offer **View full text**; the modal highlights the portion already visible in the clamped card so reading can resume at the first unhighlighted text |
 | Stash a batch of questions | Select a passage → "✦ Ask" → type the question → **Stash** parks it in the queue and closes the panel (the toolbar's **Ask** button shows how many are waiting); one click later sends the whole batch as a single token-gated `POST /doc/<id>/ask-batch`, and the agent's per-item `md_preview_reply` calls fill in each item's own Q&A card |
-| Chat with the agent about the document | A chat area at the bottom of the page takes a message about the whole document (no text selection needed) and injects it into the Pi session together with a summary of the recent chat turns; the agent replies with `md_preview_reply` and the answer appears as an "Agent" message in the chat feed (newest first), restored after refresh/reopen |
+| Chat with the agent about the document | A chat area at the bottom of the page takes a message about the whole document (no text selection needed) and injects it into the Pi / OMP session together with a summary of the recent chat turns; the agent replies with `md_preview_reply` and the answer appears as an "Agent" message in the chat feed (newest first), restored after refresh/reopen |
 | Stash a batch of revisions | Select a passage → "✎ Revise" → **Stash** the revision comment (the toolbar's **Revise** button counts the queue); one click submits it via `POST /doc/<id>/revise`, the agent edits the Markdown file directly **without posting replies**, then calls `md_preview_revision_done` (`doc?`, `highlights?`) so the page marks the rewritten passages with a color block that fades out in ~3 s |
 | Live progress on a pending wait row | While the agent works on a pending question or chat message, its wait row replaces the static waiting line with the current stage — `Agent is thinking…` → `Running {tool}…` → `Writing the reply… · {n} chars` — and the answer replaces the row when it arrives. Frames are throttled (at most ~8 per second), sent only while that document still has an unanswered entry, shared by every tab of the document; a tab that missed a re-render catches up from the init frame, which carries the current snapshot. Only the stage, tool name, character count and an ≤80-character tail of the text reach the browser — never thinking text, tool arguments or the reply body |
-| Message delivery mode | The top bar's settings popover switches how page messages reach the agent: **Follow up** (default) queues the question or chat turn until the current turn has finished, while **Steering** is injected as soon as the running tool batch completes, so it can redirect the agent mid-turn without aborting the answer being written or the tool being run. Steering appends a short convention to the prompt (carry on with the work you had not finished, do not start another turn on your own, pausing to ask is allowed). It is a user-level setting shared by every pi instance |
+| Message delivery mode | The top bar's settings popover switches how page messages reach the agent: **Follow up** (default) queues the question or chat turn until the current turn has finished, while **Steering** is injected as soon as the running tool batch completes, so it can redirect the agent mid-turn without aborting the answer being written or the tool being run. Steering appends a short convention to the prompt (carry on with the work you had not finished, do not start another turn on your own, pausing to ask is allowed). It is a user-level setting shared by every Pi / OMP instance |
 | Markdown as a web page | GFM renderer built on `marked`: headings, tables, fenced code (25+ languages highlighted), blockquotes (incl. `[!NOTE]` … `[!CAUTION]` admonitions), task lists, footnotes, images, autolinks |
 | Mermaid diagrams | `mermaid` fenced blocks render as diagrams; the mermaid runtime is lazy-loaded from the preview server's own origin (flowcharts, sequence diagrams, …) |
 | Bilingual UI (en / zh) | The agent always picks the page UI language explicitly via the required `ui_lang` tool parameter, chosen from the user's language; an in-page 中/EN switch lets the reader override it (remembered in `localStorage`) |
@@ -46,6 +48,8 @@ Built for structured-content delivery — **whenever the agent is about to outpu
 
 The package is published on npm as [`pi-md-preview`](https://www.npmjs.com/package/pi-md-preview), and has a page on the Pi site with its manifest and README: [`pi.dev/packages/pi-md-preview`](https://pi.dev/packages/pi-md-preview).
 
+**Pi**:
+
 ```bash
 pi install npm:pi-md-preview@0.5.0
 ```
@@ -56,9 +60,21 @@ Restart your Pi session after installing. To try it for one invocation without i
 pi -e npm:pi-md-preview
 ```
 
+**OMP** (the same package and the same TypeScript source):
+
+```bash
+omp install npm:pi-md-preview@0.5.0
+```
+
+Restart your OMP session after installing. To try it for one invocation without installing, pass a path — OMP's `-e` does not take npm specs:
+
+```bash
+omp --extension ./extensions/md-preview/index.ts
+```
+
 ### Install a local checkout (development)
 
-From a clone of this repository:
+From a clone of this repository, for **Pi**:
 
 ```bash
 pi install ./pi-extension-md-preview
@@ -68,6 +84,19 @@ Or load it temporarily without installing:
 
 ```bash
 pi --extension ./extensions/md-preview/index.ts
+```
+
+For **OMP**, install the same checkout:
+
+```bash
+omp install ./pi-extension-md-preview
+```
+
+Or load it temporarily, by directory or by entry file:
+
+```bash
+omp -e .
+omp --extension ./extensions/md-preview/index.ts
 ```
 
 ### In a session
@@ -98,9 +127,9 @@ The tool returns the page URL; the agent shares it with the user and moves on �
 
 The port and the `?token=` access token are preserved when `--host` rewrites the URL; see [Listening address & access token](#listening-address--access-token).
 
-The browser host is resolved on every preview call as **explicit `--host` > persisted `browserHost` > the server bind address** (`127.0.0.1` for a wildcard bind). Because the persisted value is read at call time, a pi instance that is already running picks it up on its next preview — no `/reload` and no restart needed.
+The browser host is resolved on every preview call as **explicit `--host` > persisted `browserHost` > the server bind address** (`127.0.0.1` for a wildcard bind). Because the persisted value is read at call time, a Pi / OMP instance that is already running picks it up on its next preview — no `/reload` and no restart needed.
 
-### Standalone demo (no Pi session needed)
+### Standalone demo (no agent session needed)
 
 ```bash
 npm install
@@ -131,11 +160,11 @@ Agent writes .md ──► md_preview tool ──► local preview server (127.0
                         │  sendBeacon: tab close → viewer count -1
                         ▼
    server exits 8 s after the last tab closes (5 min if none ever opened)
-   Pi session_shutdown → final safety exit
+   Pi / OMP session_shutdown → final safety exit
 ```
 
 - **Process lifecycle**: the server starts lazily on first use (tool or command) and never blocks the tool's return; exit decisions run in a lightweight 3-second patrol loop with no external dependencies.
-- **Ask-about-selection pipeline**: the page POSTs `/doc/{id}/ask` → the server stores the Q&A record and broadcasts an SSE `ask` → the extension injects the question into the Pi session via `pi.sendUserMessage` (`deliverAs` comes from the page's delivery-mode preference: `followUp` by default, `steer` when selected); after reading the relevant files, the agent calls `md_preview_reply` → the server renders the Markdown answer and broadcasts SSE `answer` → a reply card appears beside the document in every tab showing it, with the quoted text highlighted in orange.
+- **Ask-about-selection pipeline**: the page POSTs `/doc/{id}/ask` → the server stores the Q&A record and broadcasts an SSE `ask` → the extension injects the question into the Pi / OMP session via the host's user-message API (`pi.sendUserMessage`; `deliverAs` comes from the page's delivery-mode preference: `followUp` by default, `steer` when selected); after reading the relevant files, the agent calls `md_preview_reply` → the server renders the Markdown answer and broadcasts SSE `answer` → a reply card appears beside the document in every tab showing it, with the quoted text highlighted in orange.
 - **Batch pipelines**: a stashed queue leaves the page as one request — `POST /doc/{id}/ask-batch` or `POST /doc/{id}/revise` (token-gated like every other route) — and the extension wakes the agent once per batch (`onAsk` / `onRevise`) instead of once per item. An ask batch fans out into one Q&A record per item, each answered by its own `md_preview_reply` `question_id`, so the cards fill in one by one; a revise batch creates no Q&A record at all — the file is the deliverable, and `md_preview_revision_done` is the terminal step that pushes the new HTML and broadcasts the fading highlight marks. Only the newest batch per document is kept (an unfinished earlier one is superseded).
 - **Cross-tab de-duplication**: multiple tabs of the same file share one document render; edits refresh all tabs together.
 - **UI language**: the `md_preview` tool requires an explicit `ui_lang` (`"en"` or `"zh"`), which the agent chooses based on the user's language. The `/md-preview` command resolves it as `MD_PREVIEW_LANG` environment variable > `"en"` (when a document is first opened). An in-page 中/EN switch overrides the server-sent language and is remembered per browser origin in `localStorage` (`mdp.lang`). The language is intentionally *not* written to the user-level prefs file.
@@ -176,13 +205,13 @@ scripts/
 └── demo.mjs              # npm run demo: standalone render demo / --smoke headless test
 ```
 
-Pi loads the TypeScript sources directly via jiti — no build step; `tsconfig.json` exists only for type checking (`npm run check`), and `tsconfig.demo.json` only compiles the host-independent modules into CommonJS for the demo.
+Pi loads the TypeScript sources directly via jiti, OMP through its legacy Pi loader (Bun) — no build step; `tsconfig.json` exists only for type checking (`npm run check`), and `tsconfig.demo.json` only compiles the host-independent modules into CommonJS for the demo.
 
 ## Configuration
 
 | Environment variable | Effect |
 | --- | --- |
-| `MD_PREVIEW_BIND` | Bind address, default `127.0.0.1`. Set `0.0.0.0` (or a specific NIC IP) to serve other machines. **Read when the preview server starts (the first preview of the session)**; an env change mid-session needs a pi restart to take effect. It only decides the bind address — which host the browser opens is chosen by the persisted setting (`/md-preview-host`) and `--host`. The old name `MD_PREVIEW_HOST` is still accepted as a deprecated alias (`MD_PREVIEW_BIND` wins when both are set) |
+| `MD_PREVIEW_BIND` | Bind address, default `127.0.0.1`. Set `0.0.0.0` (or a specific NIC IP) to serve other machines. **Read when the preview server starts (the first preview of the session)**; an env change mid-session needs a host restart to take effect. It only decides the bind address — which host the browser opens is chosen by the persisted setting (`/md-preview-host`) and `--host`. The old name `MD_PREVIEW_HOST` is still accepted as a deprecated alias (`MD_PREVIEW_BIND` wins when both are set) |
 | `MD_PREVIEW_TOKEN` | Fixed access token, overriding the random URL-safe token generated at startup (useful for a stable remote link). Every page URL carries `?token=` |
 | `MD_PREVIEW_THEME` | Initial theme hint: `system` / `light` / `dark` (only applies until the user picks a theme) |
 | `MD_PREVIEW_LANG` | Fallback UI language: `en` / `zh` (used by the `/md-preview` command; the `md_preview` tool always passes `ui_lang` explicitly) |
@@ -197,6 +226,7 @@ To serve other machines, opt in with a reachable bind address and tell the comma
 
 ```bash
 MD_PREVIEW_BIND=0.0.0.0 pi
+MD_PREVIEW_BIND=0.0.0.0 omp
 
 # inside the session
 /md-preview reports/summary.md                     # -> http://127.0.0.1:<port>/doc/<id>?token=…
@@ -204,12 +234,12 @@ MD_PREVIEW_BIND=0.0.0.0 pi
 ```
 
 - `--host <ip>` only decides which host the browser and the shared URL use; the port and `?token=` always match the server's. It accepts `--host <ip>`, `--host=<ip>` and `--host "<ip>"`, before or after the file path.
-- `/md-preview-host <ip|hostname>` persists the browser host in the user-level config: it is used whenever a preview opens without `--host`, in this instance and in every other pi instance (the value is read at call time). `/md-preview-host` shows the persisted value, the effective value with its source and the settings file path; `/md-preview-host --clear` removes it. A persisted host the bind address does not cover keeps working with the same warning described below.
+- `/md-preview-host <ip|hostname>` persists the browser host in the user-level config: it is used whenever a preview opens without `--host`, in this instance and in every other Pi / OMP instance (the value is read at call time). `/md-preview-host` shows the persisted value, the effective value with its source and the settings file path; `/md-preview-host --clear` removes it. A persisted host the bind address does not cover keeps working with the same warning described below.
 - Binding `0.0.0.0` (or `::`) without `--host` and without a persisted host opens the browser at `127.0.0.1` — the local reading view. A remote reader needs `--host <ip-reachable-from-them>` (or the equivalent manual edit) and must keep the `?token=`.
-- A `--host` the bind address does not cover (bound to `127.0.0.1`, asking for a LAN IP) still previews, but the transcript and the UI warning tell you to start pi with `MD_PREVIEW_BIND=0.0.0.0` and restart: the server is a per-session singleton, so an env change mid-session does not rebind an already-running server.
+- A `--host` the bind address does not cover (bound to `127.0.0.1`, asking for a LAN IP) still previews, but the transcript and the UI warning tell you to start Pi or OMP with `MD_PREVIEW_BIND=0.0.0.0` and restart: the server is a per-session singleton, so an env change mid-session does not rebind an already-running server.
 - A malformed `--host` (missing value, given twice, or a URL such as `http://host`) is rejected with an explicit error and no browser is opened.
 
-> Full remote-access walkthrough (pi on a remote server, browser on your laptop, Agent Q&A over the network, plus an SSH-tunnel option): [remote access guide](docs/remote-access.md).
+> Full remote-access walkthrough (Pi or OMP on a remote server, browser on your laptop, Agent Q&A over the network, plus an SSH-tunnel option): [remote access guide](docs/remote-access.md).
 
 ### User-level preference persistence
 
@@ -238,7 +268,7 @@ Posting an explicit `null` (e.g. `{"theme": null}`) to `POST /prefs` resets that
 
 ### Ask the agent about selected text
 
-While reading, select any body text and click the floating "✦ Ask" button to type a question (Enter to send). The server stores a Q&A record and broadcasts an SSE `ask` event; the extension then injects the question into the Pi session as a user message (`deliverAs` follows the page's delivery-mode preference — `followUp` by default, delivered immediately when idle and queued behind a busy turn; `steer` when selected, injected as soon as the running tool batch completes). After answering with the help of the repository's files, the agent calls the `md_preview_reply` tool:
+While reading, select any body text and click the floating "✦ Ask" button to type a question (Enter to send). The server stores a Q&A record and broadcasts an SSE `ask` event; the extension then injects the question into the Pi / OMP session as a user message (`deliverAs` follows the page's delivery-mode preference — `followUp` by default, delivered immediately when idle and queued behind a busy turn; `steer` when selected, injected as soon as the running tool batch completes). After answering with the help of the repository's files, the agent calls the `md_preview_reply` tool:
 
 ```jsonc
 // tool call (omit question_id to answer the earliest unanswered question)
@@ -297,7 +327,7 @@ The tool re-renders the document, pushes the new HTML to every open tab, then br
 - A batch carries at most 20 items; the 21st entry is refused when stashed, so a queue is always sendable — there is no in-page control to drop individual stashed items or to clear the queue.
 - Revision highlights are located by plain-text needle: a phrase that spans inline elements, or no longer matches the edited text, marks nothing (the tool's output names the misses).
 - Delivery mode is one user-level setting, not per tab or per document, and the page cannot tell whether the agent is busy: a **Steering** message sent while the agent is idle still starts a new turn. If the host or the steering queue is unavailable the message still arrives as **Follow up**, without the steering convention and with no in-page notice; `followUp` messages queued during a turn that never ends wait indefinitely; a failed preference write does not roll the switch back.
-- Question progress is document-level, not per-question: pi events carry no document id, so a pending question or chat message shows the agent's current stage even while the turn works on something else. It is a stage indicator, not a log — no history, no percentage, no cancel control.
+- Question progress is document-level, not per-question: host events carry no document id, so a pending question or chat message shows the agent's current stage even while the turn works on something else. It is a stage indicator, not a log — no history, no percentage, no cancel control.
 
 ## Development
 

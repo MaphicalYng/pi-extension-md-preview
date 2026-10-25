@@ -30,7 +30,8 @@ if (!existsSync(serverJs)) {
 writeFileSync(join(buildDir, "package.json"), '{"type":"commonjs"}\n', "utf8");
 
 const require = createRequire(import.meta.url);
-const { ensureServer, currentServer } = require(serverJs);
+const { createPreviewServerManager } = require(serverJs);
+const servers = createPreviewServerManager();
 
 const report = join(root, ".demo", "restart-check.md");
 if (!existsSync(report)) writeFileSync(report, "# restart-check\n\n生命周期回归测试用文档。\n", "utf8");
@@ -38,7 +39,7 @@ if (!existsSync(report)) writeFileSync(report, "# restart-check\n\n生命周期�
 const failures = [];
 
 /* 1. First preview round (like the first md_preview call). */
-const s1 = await ensureServer();
+const s1 = await servers.ensure();
 const h1 = await s1.openDocument(report, { cwd: root });
 const r1 = await fetch(h1.url);
 if (!r1.ok) failures.push(`第一轮 GET ${h1.url} -> ${r1.status}`);
@@ -47,8 +48,8 @@ if (!r1.ok) failures.push(`第一轮 GET ${h1.url} -> ${r1.status}`);
 await s1.shutdown("restart-check: 模拟标签页关闭后自动退出");
 
 /* 3. Second preview round (like a later md_preview call in the same session). */
-const s2 = await ensureServer();
-if (s2 === s1) failures.push("shutdown 后 ensureServer 返回了同一个已关闭实例");
+const s2 = await servers.ensure();
+if (s2 === s1) failures.push("shutdown 后 ensure() 返回了同一个已关闭实例");
 const h2 = await s2.openDocument(report, { cwd: root });
 try {
 	const r2 = await fetch(h2.url);
@@ -56,7 +57,29 @@ try {
 } catch (err) {
 	failures.push(`第二轮 GET ${h2.url} 连接失败（浏览器会报 ERR_CONNECTION_REFUSED）：${String(err)}`);
 }
-if (currentServer() !== s2) failures.push("currentServer() 未指向新实例");
+if (servers.current() !== s2) failures.push("current() 未指向新实例");
+
+/* 4. Two managers (two factories: e.g. OMP parent and child sessions) stay isolated. */
+const parent = createPreviewServerManager();
+const child = createPreviewServerManager();
+const ps = await parent.ensure();
+const cs = await child.ensure();
+if (ps === cs) failures.push("不同 manager.ensure() 返回了同一个服务器实例");
+const ph = await ps.openDocument(report, { cwd: root });
+const ch = await cs.openDocument(report, { cwd: root });
+if (new URL(ph.url).port === new URL(ch.url).port) failures.push("父/子 manager 使用了同一个端口");
+if (new URL(ph.url).searchParams.get("token") === new URL(ch.url).searchParams.get("token")) {
+	failures.push("父/子 manager 使用了同一个 token");
+}
+await ps.shutdown("restart-check: 模拟父会话关闭");
+try {
+	const cr = await fetch(ch.url);
+	if (!cr.ok) failures.push(`父服务器关闭后子预览 GET ${ch.url} -> ${cr.status}`);
+} catch (err) {
+	failures.push(`父服务器关闭后子预览连接失败：${String(err)}`);
+}
+if (child.current() !== cs || !cs.isOpen) failures.push("父会话 shutdown 影响了子 manager 的服务器");
+await cs.shutdown("restart-check: 子会话关闭");
 
 await s2.shutdown("restart-check 完成");
 

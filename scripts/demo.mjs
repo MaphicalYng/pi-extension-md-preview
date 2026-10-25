@@ -119,11 +119,12 @@ if (!existsSync(appendix)) writeFileSync(appendix, SAMPLE_APPENDIX, "utf8");
 
 /* 4. Start the preview server against the sample report. */
 const require = createRequire(import.meta.url);
-const { ensureServer, envBindHost } = require(join(root, ".demo", "build", "server.js"));
+const { createPreviewServerManager, envBindHost } = require(join(root, ".demo", "build", "server.js"));
 const { openBrowser } = require(join(root, ".demo", "build", "browser.js"));
 const { renderMarkdown } = require(join(root, ".demo", "build", "render.js"));
 
-const server = await ensureServer();
+const servers = createPreviewServerManager();
+const server = await servers.ensure();
 const handle = await server.openDocument(report, { cwd: demoDir, title: "md-preview 示例报告" });
 console.log(`预览页面：${handle.url}`);
 
@@ -453,7 +454,7 @@ if (smoke) {
 	if (!html3.includes(shortHash)) failures.push(`页脚未显示当前 commit id（${shortHash}）`);
 
 	// ---------- 批量提问（ask-batch） ----------
-	// demo 的 ensureServer() 未传 onAsk，直接赋值计数即可（无其他订阅者）。
+	// demo 的 manager.ensure() 未传 onAsk，直接赋值计数即可（无其他订阅者）。
 	const notices = [];
 	server.onAsk = (n) => notices.push(n);
 

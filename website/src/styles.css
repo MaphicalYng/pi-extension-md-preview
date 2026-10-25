@@ -2039,6 +2039,14 @@ html[lang="en"] .interaction-copy h3 {
   font-size: 9px;
 }
 
+.trial-command--block {
+  display: block;
+}
+
+.install-action > .install-omp {
+  margin-top: 18px;
+}
+
 .site-footer {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;

@@ -379,6 +379,8 @@ export class PreviewServer {
 	private progressDirty = new Set<string>();
 	/** Single coalescing timer; at most one flush per PROGRESS_FLUSH_MS. */
 	private progressTimer: ReturnType<typeof setTimeout> | null = null;
+	/** Lifecycle sweep interval; cleared on shutdown so a finished server leaves no timer behind. */
+	private sweepTimer: ReturnType<typeof setInterval> | null = null;
 	/** Newest revision batch per document id. */
 	private revisions = new Map<string, RevisionRecord>();
 	private revisionSeq = 0;
@@ -417,7 +419,14 @@ export class PreviewServer {
 				resolve();
 			});
 		});
-		setInterval(() => this.sweep(), SWEEP_MS).unref();
+		this.sweepTimer = setInterval(() => {
+			try {
+				this.sweep();
+			} catch {
+				/* a sweep failure is never fatal to the host session */
+			}
+		}, SWEEP_MS);
+		this.sweepTimer.unref();
 	}
 
 	// ---------------------------------------------------------------- docs
@@ -602,7 +611,11 @@ export class PreviewServer {
 			doc.reloadTimer = setTimeout(() => {
 				doc.reloadTimer = null;
 				if (this.shuttingDown) return;
-				void this.refresh(doc).then(() => this.broadcastUpdate(doc));
+				void this.refresh(doc)
+					.then(() => this.broadcastUpdate(doc))
+					.catch(() => {
+						/* a failed background reload must not crash the host */
+					});
 			}, 180);
 		};
 		try {
@@ -847,7 +860,11 @@ export class PreviewServer {
 		if (this.sseConns.size === 0) return; // nobody to tell: the snapshot is resent on reconnect
 		this.progressTimer = setTimeout(() => {
 			this.progressTimer = null;
-			this.flushProgress();
+			try {
+				this.flushProgress();
+			} catch {
+				/* progress reporting is best-effort and never fatal */
+			}
 		}, PROGRESS_FLUSH_MS);
 		this.progressTimer.unref();
 	}
@@ -1150,7 +1167,11 @@ export class PreviewServer {
 		this.roots.add(doc.rootDir);
 		// A document opened through a Markdown link is active too: md_preview_revision_done may omit `doc`.
 		this.lastActiveDocId = doc.id;
-		void this.refresh(doc).then(() => this.watch(doc));
+		void this.refresh(doc)
+			.then(() => this.watch(doc))
+			.catch(() => {
+				/* serving the page reports the real error; a failed preload only skips watching */
+			});
 		return doc;
 	}
 
@@ -1554,15 +1575,21 @@ h1{font-size:1.4rem} li{margin:.4rem 0} code{opacity:.6;font-size:.85em} a{color
 		const now = Date.now();
 		if (this.hadViewer) {
 			if (this.noViewerSince === null) this.noViewerSince = now;
-			else if (now - this.noViewerSince >= IDLE_MS) void this.shutdown("All preview tabs were closed");
+			else if (now - this.noViewerSince >= IDLE_MS)
+				void this.shutdown("All preview tabs were closed").catch(() => {});
 			return;
 		}
-		if (now - this.startedAt >= NEVER_OPENED_MS) void this.shutdown("The preview page was never opened");
+		if (now - this.startedAt >= NEVER_OPENED_MS)
+			void this.shutdown("The preview page was never opened").catch(() => {});
 	}
 
 	async shutdown(reason: string): Promise<void> {
 		if (this.shuttingDown) return;
 		this.shuttingDown = true;
+		if (this.sweepTimer) {
+			clearInterval(this.sweepTimer);
+			this.sweepTimer = null;
+		}
 		if (this.progressTimer) {
 			clearTimeout(this.progressTimer);
 			this.progressTimer = null;
@@ -1732,39 +1759,55 @@ export function decodePathToken(token: string): string | null {
 	}
 }
 
-// ------------------------------------------------------------- singleton
+// ------------------------------------------------------- server manager
 
-let instance: PreviewServer | null = null;
-let starting: Promise<PreviewServer> | null = null;
-
-export function ensureServer(opts?: {
+/** Options a preview server is created with; callbacks are bound when the server is created. */
+export interface PreviewServerOptions {
 	onShutdown?: (reason: string) => void;
 	onAsk?: (event: AskEvent) => void;
 	onRevise?: (notice: RevisionNotice) => void;
 	host?: string;
-}): Promise<PreviewServer> {
-	if (instance && instance.isOpen) return Promise.resolve(instance);
-	if (!starting) {
-		const server = new PreviewServer(opts?.onShutdown, resolveListenHost(opts?.host));
-		if (opts?.onAsk) server.onAsk = opts.onAsk;
-		if (opts?.onRevise) server.onRevise = opts.onRevise;
-		const boot = server.start().then(() => {
-			instance = server;
-			return server;
-		});
-		starting = boot;
-		// Release the boot guard once it settles. Clearing it only on failure
-		// (the old behavior) kept a resolved promise around forever, so every
-		// call after the server auto-exited got the dead instance back and the
-		// browser hit ERR_CONNECTION_REFUSED on the closed port.
-		const settle = () => {
-			if (starting === boot) starting = null;
-		};
-		boot.then(settle, settle);
-	}
-	return starting;
 }
 
-export function currentServer(): PreviewServer | null {
-	return instance;
+/**
+ * Per-factory server manager. The module deliberately keeps no global instance: hosts that
+ * share loaded modules between sessions (OMP re-runs the extension factory for child
+ * sessions) must never share a preview server, its token, its documents or its shutdown.
+ */
+export interface PreviewServerManager {
+	ensure(opts?: PreviewServerOptions): Promise<PreviewServer>;
+	current(): PreviewServer | null;
+}
+
+/** Create one independent preview-server slot (one per extension factory invocation). */
+export function createPreviewServerManager(): PreviewServerManager {
+	let instance: PreviewServer | null = null;
+	let starting: Promise<PreviewServer> | null = null;
+	return {
+		ensure(opts) {
+			if (instance && instance.isOpen) return Promise.resolve(instance);
+			if (!starting) {
+				const server = new PreviewServer(opts?.onShutdown, resolveListenHost(opts?.host));
+				if (opts?.onAsk) server.onAsk = opts.onAsk;
+				if (opts?.onRevise) server.onRevise = opts.onRevise;
+				const boot = server.start().then(() => {
+					instance = server;
+					return server;
+				});
+				starting = boot;
+				// Release the boot guard once it settles. Clearing it only on failure
+				// (the old behavior) kept a resolved promise around forever, so every
+				// call after the server auto-exited got the dead instance back and the
+				// browser hit ERR_CONNECTION_REFUSED on the closed port.
+				const settle = () => {
+					if (starting === boot) starting = null;
+				};
+				boot.then(settle, settle);
+			}
+			return starting;
+		},
+		current() {
+			return instance;
+		},
+	};
 }

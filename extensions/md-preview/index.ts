@@ -13,16 +13,17 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
-import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
-	currentServer,
-	ensureServer,
+	createPreviewServerManager,
 	envBindHost,
 	MAX_HIGHLIGHTS,
 	MAX_HIGHLIGHT_LEN,
 	PROGRESS_SNIPPET_MAX,
 	type AskBatchNotice,
 	type AskNotice,
+	type PreviewServer,
+	type PreviewServerManager,
 	type ProgressPatch,
 	type QaEntry,
 	type RevisionNotice,
@@ -41,17 +42,12 @@ function notifySafely(notify: Notify | undefined, message: string, type?: "info"
 	}
 }
 
-/**
- * Session messenger injected by the extension factory; it delivers a preview-page
- * message (question, chat message or revision request) into the pi session.
- *
- * Two delivery modes, chosen per call from the `messageMode` preference:
- *  - `followUp` (default): queued as a follow-up message; delivered immediately when the
- *    agent is idle, or after the current turn when it is busy.
- *  - `steer`: injected mid-turn, right after a tool batch, so it can redirect work that is
- *    still running. Nothing is cancelled: whatever the turn was doing continues afterwards.
+/*
+ * The session messenger is not module state: every extension-factory invocation owns its own
+ * messenger (see mdPreviewExtension). Hosts that reuse the imported module between sessions
+ * (OMP runs the factory again for child sessions) would otherwise route a page message into
+ * whichever session wrote the module global last.
  */
-let sessionMessenger: ((text: string) => void) | null = null;
 
 /** Max characters of a quoted passage injected into the session (single question / chat-less ask). */
 const QA_QUOTE_MAX = 1200;
@@ -115,11 +111,17 @@ function trySend(send: SendUserMessage, text: string, deliverAs: MessageMode | n
  * immediately - there is no cached value captured at creation time.
  *
  * `send` is injected by the factory (in production: the host's own send function).
+ * `isIdle` is optional: when the host reports an idle session, a bare call is the portable way to
+ * start a turn. Pi starts a turn for `deliverAs` on an idle session too, but OMP's explicit
+ * `followUp`/`steer` only queues, so an explicit mode there would leave the message unprocessed.
  */
-export function createSessionMessenger(send: SendUserMessage): (text: string) => void {
+export function createSessionMessenger(send: SendUserMessage, isIdle?: () => boolean): (text: string) => void {
 	return (text) => {
 		const mode = resolveMessageMode(loadPrefsLive());
-		if (trySend(send, composeMessage(text, mode), mode)) return;
+		const composed = composeMessage(text, mode);
+		// Same composed text as the old path: only the delivery option is omitted when idle.
+		if (isIdle?.() && trySend(send, composed, null)) return;
+		if (trySend(send, composed, mode)) return;
 		// Degraded delivery: the host does not support options, or the steering queue is unavailable.
 		// A steered text must never be delivered as followUp with the steering convention still attached -
 		// that would tell the model it is an interception while it is really a queued turn - so the
@@ -413,7 +415,7 @@ export function needsHostWarning(listenHost: string, targetHost: string): boolea
 function hostMismatchWarning(listenHost: string, targetHost: string, port: number): string {
 	return (
 		`the preview server is listening on ${listenHost} only, so http://${targetHost}:${port}/... may not be reachable. ` +
-		`Set MD_PREVIEW_BIND=0.0.0.0 (or MD_PREVIEW_BIND=${targetHost}) and restart pi to serve that address. ` +
+		`Set MD_PREVIEW_BIND=0.0.0.0 (or MD_PREVIEW_BIND=${targetHost}) and restart the host (Pi or OMP) to serve that address. ` +
 		"The preview server is a per-session singleton: it keeps its original bind even if MD_PREVIEW_BIND changes mid-session - the new value only takes effect after a restart."
 	);
 }
@@ -423,252 +425,284 @@ function usesLegacyBindEnv(): boolean {
 	return !process.env.MD_PREVIEW_BIND?.trim() && !!process.env.MD_PREVIEW_HOST?.trim();
 }
 
-/**
- * The live preview server, if any. `currentServer()` keeps returning the last instance after it
- * exits (auto-exit / shutdown), so callers that report or warn about "the running server" must
- * check `isOpen` first.
- */
-function liveServer() {
-	const server = currentServer();
-	return server && server.isOpen ? server : null;
-}
-
 /** Tools of this extension: their execution is the answer pipeline itself, not work to report. */
 const SELF_TOOLS = new Set(["md_preview", "md_preview_reply", "md_preview_revision_done"]);
 
-/**
- * Push one progress sample to the preview server: a no-op when no preview is running. Never
- * calls `ensureServer()` — reporting progress must not start a server (or a browser tab).
- * Progress is document-level: the server drops patches for documents without a pending entry.
- */
-function publishProgress(patch: ProgressPatch): void {
-	currentServer()?.publishProgress(patch);
+/** Options shared by the `md_preview` tool and the `/md-preview` command. */
+interface PreviewOptions {
+	cwd: string;
+	title?: string;
+	uiLang?: UiLang;
+	open?: boolean;
+	notify?: Notify;
+	host?: string;
 }
 
-/** Shared by the `md_preview` tool and the `/md-preview` command. */
-async function previewMarkdown(
-	file: string,
-	opts: { cwd: string; title?: string; uiLang?: UiLang; open?: boolean; notify?: Notify; host?: string },
-): Promise<PreviewOutcome> {
-	const abs = path.isAbsolute(file) ? path.normalize(file) : path.resolve(opts.cwd, file);
-	let stat: fs.Stats;
-	try {
-		stat = await fs.promises.stat(abs);
-	} catch {
-		return { ok: false, text: `Preview failed: file not found at \`${abs}\`. Create it first (for example with the write tool).` };
-	}
-	if (!stat.isFile()) {
-		return { ok: false, text: `Preview failed: \`${abs}\` is not a regular file.` };
-	}
+/** Per-factory preview capabilities; every server lookup goes through this factory's own manager. */
+interface PreviewRuntime {
+	liveServer(): PreviewServer | null;
+	publishProgress(patch: ProgressPatch): void;
+	previewMarkdown(file: string, opts: PreviewOptions): Promise<PreviewOutcome>;
+}
 
-	const server = await ensureServer({
-		host: envBindHost(), // MD_PREVIEW_BIND (or legacy MD_PREVIEW_HOST): same precedence as the contract chain
-		onShutdown: (reason) => {
-			try {
-				opts.notify?.(`Markdown preview: ${reason}`, "info");
-			} catch {
-				/* session may already be gone; nothing to notify */
-			}
+/**
+ * Bind the preview pipeline to one factory's server manager and messenger. Nothing reads a
+ * module-global session: a child session's factory gets its own server, token, documents,
+ * progress channel and shutdown, so siblings can never cross-close or cross-post.
+ */
+function createPreviewRuntime(servers: PreviewServerManager, deliver: (text: string) => void): PreviewRuntime {
+	/**
+	 * The live preview server, if any. A manager keeps returning the last instance after it
+	 * exits (auto-exit / shutdown), so callers that report or warn about "the running server"
+	 * must check `isOpen` first.
+	 */
+	const liveServer = (): PreviewServer | null => {
+		const server = servers.current();
+		return server && server.isOpen ? server : null;
+	};
+
+	/**
+	 * Push one progress sample to the preview server: a no-op when no preview is running. Never
+	 * starts a server (or a browser tab). Progress is document-level: the server drops patches
+	 * for documents without a pending entry.
+	 */
+	const publishProgress = (patch: ProgressPatch): void => {
+		servers.current()?.publishProgress(patch);
+	};
+
+	/** Shared by the `md_preview` tool and the `/md-preview` command. */
+	const previewMarkdown = async (file: string, opts: PreviewOptions): Promise<PreviewOutcome> => {
+		const abs = path.isAbsolute(file) ? path.normalize(file) : path.resolve(opts.cwd, file);
+		let stat: fs.Stats;
+		try {
+			stat = await fs.promises.stat(abs);
+		} catch {
+			return { ok: false, text: `Preview failed: file not found at \`${abs}\`. Create it first (for example with the write tool).` };
+		}
+		if (!stat.isFile()) {
+			return { ok: false, text: `Preview failed: \`${abs}\` is not a regular file.` };
+		}
+
+		const server = await servers.ensure({
+			host: envBindHost(), // MD_PREVIEW_BIND (or legacy MD_PREVIEW_HOST): same precedence as the contract chain
+			onShutdown: (reason) => {
+				try {
+					opts.notify?.(`Markdown preview: ${reason}`, "info");
+				} catch {
+					/* session may already be gone; nothing to notify */
+				}
+			},
+		});
+		// Preview-page traffic -> wake the agent by injecting it into this factory's session. A batch of
+		// staged questions becomes one merged message; revision comments become an edit request, not a reply.
+		server.onAsk = (event) => {
+			if (event.batch) deliver(formatAskBatchMessage(event));
+			else deliver(event.chat ? formatChatMessage(event) : formatAskMessage(event));
+		};
+		server.onRevise = (notice) => deliver(formatReviseMessage(notice));
+		const handle = await server.openDocument(abs, { cwd: opts.cwd, title: opts.title, uiLang: opts.uiLang });
+
+		// One page URL drives the browser, the transcript and details.url (never mix hosts).
+		// The host is read at call time (not extension load): a host saved by another Pi / OMP instance - or by
+		// /md-preview-host in this one - takes effect on the very next preview, no reload needed.
+		const { host: targetHost } = pickBrowserHost(
+			opts.host, // explicit --host from the command (the tool has no host parameter)
+			loadPrefs().browserHost, // persisted user-level setting; loadPrefs re-reads the file on every call
+			localBrowserHost(server.host), // bind fallback (a wildcard bind opens on loopback)
+		);
+		const pageUrl = withUrlHost(handle.url, targetHost);
+
+		const tabAlreadyOpen = handle.liveViewers > 0;
+		const opened = !tabAlreadyOpen && opts.open !== false ? openBrowser(pageUrl) : false;
+		const warning = needsHostWarning(server.host, targetHost) ? hostMismatchWarning(server.host, targetHost, handle.port) : undefined;
+		if (warning) notifySafely(opts.notify, `Markdown preview: ${warning}`, "warning");
+		notifySafely(opts.notify, `Markdown preview is ready: ${handle.title}`, "info");
+
+		const browserLine = tabAlreadyOpen
+			? "Reusing the already-open preview tab (file updates sync automatically)"
+			: opened
+				? "Opened the browser preview tab automatically"
+				: "Could not open the browser automatically; open the URL above manually";
+
+		return {
+			ok: true,
+			opened,
+			url: pageUrl,
+			uiLang: handle.uiLang,
+			warning,
+			text: [
+				`Markdown preview is ready: **${handle.title}**`,
+				`- Page URL: <${pageUrl}>`,
+				`- Source file: \`${abs}\``,
+				`- Browser: ${browserLine}`,
+				`- Live sync: the page refreshes automatically when the file changes; no need to call this tool again`,
+				`- Auto-exit: the preview server stops once the user closes the browser tab, so you do not need to keep working or poll its status`,
+				...(warning ? [`- Warning: ${warning}`] : []),
+				...(usesLegacyBindEnv()
+					? ["- Warning: `MD_PREVIEW_HOST` is deprecated for the bind address; use `MD_PREVIEW_BIND` (the old name still works)."]
+					: []),
+				``,
+				"Share the page URL with the user exactly as returned - it carries a required `?token=` access token - then continue with your other work.",
+			].join("\n"),
+		};
+	};
+
+	return { liveServer, publishProgress, previewMarkdown };
+}
+
+/**
+ * Build the three tools for one extension factory. Tool names, descriptions, Pi prompt fields,
+ * annotations and schemas are untouched; only the captured server manager is per-session, so a
+ * tool call can never answer into another session's preview or revision batch.
+ */
+function createPreviewTools(servers: PreviewServerManager, previewMarkdown: PreviewRuntime["previewMarkdown"]) {
+	const mdPreviewTool = defineTool({
+		name: "md_preview",
+		label: "Markdown Preview",
+		description:
+			"Render a Markdown file as a professionally typeset web page and open a browser tab for the user to read. " +
+			"Mandatory trigger rule: whenever the output you are about to produce is structured content (a report, research findings, a design document, a README, a multi-paragraph/multi-section article, a table, a list, a code example, etc.) and is longer than 150 characters, you must first write it to a .md file and then call this tool to present it; never output it only in the terminal. " +
+			"The page ships with table-of-contents navigation, code highlighting, light/dark modes, and font-size controls; " +
+			"the page refreshes automatically after the source file is modified. The tool returns immediately and you do not need to keep working afterwards: the preview server exits automatically once the user closes the tab. The returned page URL carries a required `?token=` access token; share it in full.",
+		promptSnippet: "md_preview: mandatory when the output is structured content longer than 150 characters — write the .md file first, then present it as a web page in the browser",
+		promptGuidelines: [
+			"Mandatory rule: when the output is structured content (a report, a document, multi-paragraph/multi-section text, a table, a list, a code example, etc.) longer than 150 characters, you must write it to a .md file and call md_preview to present it in the browser; never output it only in the terminal, and do not hesitate or downgrade to a plain-text reply.",
+			"When presenting a long report or Markdown document that the user needs to read carefully, write it to a .md file and call md_preview to present it in the browser instead of only printing it in the terminal.",
+			"ui_lang is REQUIRED on every call — never omit it: choose it based on the user's language (\"zh\" when the user communicates in Chinese, otherwise \"en\").",
+			"After md_preview returns, share the page URL with the user and continue with your other work; do not wait for the user to close the page, and do not call the tool repeatedly just to refresh the page.",
+			"The page URL returned by md_preview carries a required `?token=` access token: share it exactly as returned - never truncate it, and never strip or rewrite the query string, or the user will get a 401 error instead of the page.",
+		],
+		parameters: Type.Object({
+			file: Type.String({
+				description: "Path of the Markdown file to preview (absolute, or relative to the current working directory)",
+			}),
+			title: Type.Optional(Type.String({ description: "Page title; defaults to the first level-1 heading of the document" })),
+			open_browser: Type.Optional(Type.Boolean({ description: "Whether to open a browser tab automatically; default true" })),
+			ui_lang: Type.Union([Type.Literal("en"), Type.Literal("zh")], {
+				description:
+					'UI language of the preview page: "en" or "zh". REQUIRED — never omit it. ' +
+					'Always choose it based on the user\'s language: use "zh" when the user communicates in Chinese, otherwise use "en". ' +
+					"Passing a different value on a later call updates the language of an already-open document.",
+			}),
+		}),
+		annotations: {
+			readOnlyHint: true,
+			destructiveHint: false,
+			idempotentHint: true,
+			openWorldHint: false,
+		},
+
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const outcome = await previewMarkdown(params.file, {
+				cwd: ctx.cwd,
+				title: params.title,
+				uiLang: params.ui_lang,
+				open: params.open_browser,
+				notify: ctx.hasUI ? (message, type) => ctx.ui.notify(message, type) : undefined,
+			});
+			return {
+				content: [{ type: "text", text: outcome.text }],
+				details: {
+					file: params.file,
+					url: outcome.url ?? null,
+					opened: outcome.opened ?? false,
+					ui_lang: outcome.uiLang ?? null,
+				},
+				isError: !outcome.ok,
+			};
 		},
 	});
-	// Preview-page traffic -> wake the agent by injecting it into the pi session. A batch of staged
-	// questions becomes one merged message; revision comments become an edit request, not a reply.
-	server.onAsk = (event) => {
-		if (event.batch) sessionMessenger?.(formatAskBatchMessage(event));
-		else sessionMessenger?.(event.chat ? formatChatMessage(event) : formatAskMessage(event));
-	};
-	server.onRevise = (notice) => sessionMessenger?.(formatReviseMessage(notice));
-	const handle = await server.openDocument(abs, { cwd: opts.cwd, title: opts.title, uiLang: opts.uiLang });
 
-	// One page URL drives the browser, the transcript and details.url (never mix hosts).
-	// The host is read at call time (not extension load): a host saved by another pi instance - or by
-	// /md-preview-host in this one - takes effect on the very next preview, no reload needed.
-	const { host: targetHost } = pickBrowserHost(
-		opts.host, // explicit --host from the command (the tool has no host parameter)
-		loadPrefs().browserHost, // persisted user-level setting; loadPrefs re-reads the file on every call
-		localBrowserHost(server.host), // bind fallback (a wildcard bind opens on loopback)
-	);
-	const pageUrl = withUrlHost(handle.url, targetHost);
-
-	const tabAlreadyOpen = handle.liveViewers > 0;
-	const opened = !tabAlreadyOpen && opts.open !== false ? openBrowser(pageUrl) : false;
-	const warning = needsHostWarning(server.host, targetHost) ? hostMismatchWarning(server.host, targetHost, handle.port) : undefined;
-	if (warning) notifySafely(opts.notify, `Markdown preview: ${warning}`, "warning");
-	notifySafely(opts.notify, `Markdown preview is ready: ${handle.title}`, "info");
-
-	const browserLine = tabAlreadyOpen
-		? "Reusing the already-open preview tab (file updates sync automatically)"
-		: opened
-			? "Opened the browser preview tab automatically"
-			: "Could not open the browser automatically; open the URL above manually";
-
-	return {
-		ok: true,
-		opened,
-		url: pageUrl,
-		uiLang: handle.uiLang,
-		warning,
-		text: [
-			`Markdown preview is ready: **${handle.title}**`,
-			`- Page URL: <${pageUrl}>`,
-			`- Source file: \`${abs}\``,
-			`- Browser: ${browserLine}`,
-			`- Live sync: the page refreshes automatically when the file changes; no need to call this tool again`,
-			`- Auto-exit: the preview server stops once the user closes the browser tab, so you do not need to keep working or poll its status`,
-			...(warning ? [`- Warning: ${warning}`] : []),
-			...(usesLegacyBindEnv()
-				? ["- Warning: `MD_PREVIEW_HOST` is deprecated for the bind address; use `MD_PREVIEW_BIND` (the old name still works)."]
-				: []),
-			``,
-			"Share the page URL with the user exactly as returned - it carries a required `?token=` access token - then continue with your other work.",
-		].join("\n"),
-	};
-}
-
-const mdPreviewTool = defineTool({
-	name: "md_preview",
-	label: "Markdown Preview",
-	description:
-		"Render a Markdown file as a professionally typeset web page and open a browser tab for the user to read. " +
-		"Mandatory trigger rule: whenever the output you are about to produce is structured content (a report, research findings, a design document, a README, a multi-paragraph/multi-section article, a table, a list, a code example, etc.) and is longer than 150 characters, you must first write it to a .md file and then call this tool to present it; never output it only in the terminal. " +
-		"The page ships with table-of-contents navigation, code highlighting, light/dark modes, and font-size controls; " +
-		"the page refreshes automatically after the source file is modified. The tool returns immediately and you do not need to keep working afterwards: the preview server exits automatically once the user closes the tab. The returned page URL carries a required `?token=` access token; share it in full.",
-	promptSnippet: "md_preview: mandatory when the output is structured content longer than 150 characters — write the .md file first, then present it as a web page in the browser",
-	promptGuidelines: [
-		"Mandatory rule: when the output is structured content (a report, a document, multi-paragraph/multi-section text, a table, a list, a code example, etc.) longer than 150 characters, you must write it to a .md file and call md_preview to present it in the browser; never output it only in the terminal, and do not hesitate or downgrade to a plain-text reply.",
-		"When presenting a long report or Markdown document that the user needs to read carefully, write it to a .md file and call md_preview to present it in the browser instead of only printing it in the terminal.",
-		"ui_lang is REQUIRED on every call — never omit it: choose it based on the user's language (\"zh\" when the user communicates in Chinese, otherwise \"en\").",
-		"After md_preview returns, share the page URL with the user and continue with your other work; do not wait for the user to close the page, and do not call the tool repeatedly just to refresh the page.",
-		"The page URL returned by md_preview carries a required `?token=` access token: share it exactly as returned - never truncate it, and never strip or rewrite the query string, or the user will get a 401 error instead of the page.",
-	],
-	parameters: Type.Object({
-		file: Type.String({
-			description: "Path of the Markdown file to preview (absolute, or relative to the current working directory)",
+	/**
+	 * Exit point for agent replies to preview-page questions: after a question is
+	 * injected into the session through onAsk, the model reads the relevant files and
+	 * sends the answer back with this tool (pushed to every open tab over SSE).
+	 */
+	const mdPreviewReplyTool = defineTool({
+		name: "md_preview_reply",
+		label: "Reply to Preview Question",
+		description:
+			"Reply to a message the user sent from the Markdown preview page: a question about a passage selected in the page (the message starts with \"[Markdown preview page question]\" or \"[Markdown preview page questions]\" for a batch), or a message typed in the chat box at the bottom of the page (the message starts with \"[Markdown preview page chat]\"). " +
+			"Call it only after receiving one of those messages; the reply is rendered as Markdown on the preview page, as a reply card that shows the quoted passage for selected-text questions or as an assistant message in the page chat. " +
+			"A batch message lists several question ids: call this tool once per item with that item's own question_id, never merging items and never skipping an id.",
+		parameters: Type.Object({
+			question_id: Type.Optional(Type.String({
+				description: "Question ID (given in the question message, e.g. q1); omit to reply to the earliest unanswered question",
+			})),
+			text: Type.String({ description: "Reply text (Markdown supported)" }),
 		}),
-		title: Type.Optional(Type.String({ description: "Page title; defaults to the first level-1 heading of the document" })),
-		open_browser: Type.Optional(Type.Boolean({ description: "Whether to open a browser tab automatically; default true" })),
-		ui_lang: Type.Union([Type.Literal("en"), Type.Literal("zh")], {
-			description:
-				'UI language of the preview page: "en" or "zh". REQUIRED — never omit it. ' +
-				'Always choose it based on the user\'s language: use "zh" when the user communicates in Chinese, otherwise use "en". ' +
-				"Passing a different value on a later call updates the language of an already-open document.",
-		}),
-	}),
-	annotations: {
-		readOnlyHint: true,
-		destructiveHint: false,
-		idempotentHint: true,
-		openWorldHint: false,
-	},
-
-	async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-		const outcome = await previewMarkdown(params.file, {
-			cwd: ctx.cwd,
-			title: params.title,
-			uiLang: params.ui_lang,
-			open: params.open_browser,
-			notify: ctx.hasUI ? (message, type) => ctx.ui.notify(message, type) : undefined,
-		});
-		return {
-			content: [{ type: "text", text: outcome.text }],
-			details: {
-				file: params.file,
-				url: outcome.url ?? null,
-				opened: outcome.opened ?? false,
-				ui_lang: outcome.uiLang ?? null,
-			},
-			isError: !outcome.ok,
-		};
-	},
-});
-
-/**
- * Exit point for agent replies to preview-page questions: after a question is
- * injected into the session through onAsk, the model reads the relevant files and
- * sends the answer back with this tool (pushed to every open tab over SSE).
- */
-const mdPreviewReplyTool = defineTool({
-	name: "md_preview_reply",
-	label: "Reply to Preview Question",
-	description:
-		"Reply to a message the user sent from the Markdown preview page: a question about a passage selected in the page (the message starts with \"[Markdown preview page question]\" or \"[Markdown preview page questions]\" for a batch), or a message typed in the chat box at the bottom of the page (the message starts with \"[Markdown preview page chat]\"). " +
-		"Call it only after receiving one of those messages; the reply is rendered as Markdown on the preview page, as a reply card that shows the quoted passage for selected-text questions or as an assistant message in the page chat. " +
-		"A batch message lists several question ids: call this tool once per item with that item's own question_id, never merging items and never skipping an id.",
-	parameters: Type.Object({
-		question_id: Type.Optional(Type.String({
-			description: "Question ID (given in the question message, e.g. q1); omit to reply to the earliest unanswered question",
-		})),
-		text: Type.String({ description: "Reply text (Markdown supported)" }),
-	}),
-	annotations: {
-		readOnlyHint: false,
-		destructiveHint: false,
-		idempotentHint: true,
-		openWorldHint: false,
-	},
-	async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-		const server = currentServer();
-		if (!server) {
-			return { content: [{ type: "text", text: "No Markdown preview server is running." }], isError: true, details: undefined };
-		}
-		const result = server.answerQuestion(params.question_id ?? undefined, params.text);
-		return {
-			content: [{ type: "text", text: result.message }],
-			isError: !result.ok,
-			details: { question_id: params.question_id ?? null },
-		};
-	},
-});
-
-/**
- * Exit point for a batch of revision comments: the agent edits the Markdown file, then marks the
- * batch done, which pushes the post-edit HTML and the highlight phrases to every open tab.
- */
-const mdPreviewRevisionDoneTool = defineTool({
-	name: "md_preview_revision_done",
-	label: "Mark Preview Revision Done",
-	description:
-		"Mark a batch of revision comments from the Markdown preview page as applied, after the edits are saved to the file. " +
-		"Call it once after applying a message that starts with \"[Markdown preview page revision request]\": not once per comment, and never for a question or chat message. " +
-		"It pushes the updated HTML and the highlight phrases to every open tab, which is what turns the staged comments into a fading color block; without this call the page keeps showing the comments as pending. " +
-		"The tool neither posts a reply nor modifies the file. idempotent: calling it twice for the same batch does not extend the highlight window.",
-	parameters: Type.Object({
-		doc: Type.Optional(
-			Type.String({
-				description:
-					"Document id (e.g. d1) or the Markdown file path the revision request names; omit to target the most recently active previewed document",
-			}),
-		),
-		highlights: Type.Optional(
-			Type.Array(Type.String(), {
-				description:
-					`One short phrase per revised passage, copied verbatim from the newly written text, plain text without Markdown markers (max ${MAX_HIGHLIGHTS} phrases, ${MAX_HIGHLIGHT_LEN} chars each)`,
-			}),
-		),
-	}),
-	annotations: {
-		readOnlyHint: false,
-		destructiveHint: false,
-		idempotentHint: true,
-		openWorldHint: false,
-	},
-	async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-		const server = currentServer();
-		if (!server || !server.isOpen) {
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: true,
+			openWorldHint: false,
+		},
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const server = servers.current();
+			if (!server) {
+				return { content: [{ type: "text", text: "No Markdown preview server is running." }], isError: true, details: undefined };
+			}
+			const result = server.answerQuestion(params.question_id ?? undefined, params.text);
 			return {
-				content: [{ type: "text", text: "No Markdown preview server is running; there is no revision batch to mark done." }],
-				isError: true,
-				details: undefined,
+				content: [{ type: "text", text: result.message }],
+				isError: !result.ok,
+				details: { question_id: params.question_id ?? null },
 			};
-		}
-		const result = await server.revisionDone(params.doc ?? undefined, params.highlights);
-		return {
-			content: [{ type: "text", text: result.message }],
-			isError: !result.ok,
-			details: { doc: result.docId ?? null, batch_id: result.batchId ?? null, highlights: params.highlights?.length ?? 0 },
-		};
-	},
-});
+		},
+	});
+
+	/**
+	 * Exit point for a batch of revision comments: the agent edits the Markdown file, then marks the
+	 * batch done, which pushes the post-edit HTML and the highlight phrases to every open tab.
+	 */
+	const mdPreviewRevisionDoneTool = defineTool({
+		name: "md_preview_revision_done",
+		label: "Mark Preview Revision Done",
+		description:
+			"Mark a batch of revision comments from the Markdown preview page as applied, after the edits are saved to the file. " +
+			"Call it once after applying a message that starts with \"[Markdown preview page revision request]\": not once per comment, and never for a question or chat message. " +
+			"It pushes the updated HTML and the highlight phrases to every open tab, which is what turns the staged comments into a fading color block; without this call the page keeps showing the comments as pending. " +
+			"The tool neither posts a reply nor modifies the file. idempotent: calling it twice for the same batch does not extend the highlight window.",
+		parameters: Type.Object({
+			doc: Type.Optional(
+				Type.String({
+					description:
+						"Document id (e.g. d1) or the Markdown file path the revision request names; omit to target the most recently active previewed document",
+				}),
+			),
+			highlights: Type.Optional(
+				Type.Array(Type.String(), {
+					description:
+						`One short phrase per revised passage, copied verbatim from the newly written text, plain text without Markdown markers (max ${MAX_HIGHLIGHTS} phrases, ${MAX_HIGHLIGHT_LEN} chars each)`,
+				}),
+			),
+		}),
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: true,
+			openWorldHint: false,
+		},
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const server = servers.current();
+			if (!server || !server.isOpen) {
+				return {
+					content: [{ type: "text", text: "No Markdown preview server is running; there is no revision batch to mark done." }],
+					isError: true,
+					details: undefined,
+				};
+			}
+			const result = await server.revisionDone(params.doc ?? undefined, params.highlights);
+			return {
+				content: [{ type: "text", text: result.message }],
+				isError: !result.ok,
+				details: { doc: result.docId ?? null, batch_id: result.batchId ?? null, highlights: params.highlights?.length ?? 0 },
+			};
+		},
+	});
+
+	return { mdPreviewTool, mdPreviewReplyTool, mdPreviewRevisionDoneTool };
+}
 
 /** Complete `/md-preview` with Markdown files under the current working directory. */
 function completeMarkdownFiles(prefix: string): { value: string; label: string }[] | null {
@@ -723,36 +757,61 @@ function parseHostCmdArgs(raw: string): HostCmdArgs {
 	return { mode: "set", value: v };
 }
 
+/**
+ * Attach OMP tool metadata. OMP's legacy Pi shim reads `loadMode` and `approval`; Pi keeps the
+ * same tool object and ignores fields it does not know, so neither host needs a runtime host check.
+ * `essential` keeps the three tools directly available (not only discoverable via `xd://`), and
+ * `read` matches what they do: they never write user source files.
+ */
+function withOmpMetadata<T extends object>(tool: T): T {
+	return Object.assign(tool, { loadMode: "essential", approval: "read" });
+}
+
 export default function mdPreviewExtension(pi: ExtensionAPI) {
-	sessionMessenger = createSessionMessenger((text, options) => pi.sendUserMessage(text, options));
-	pi.registerTool(mdPreviewTool);
-	pi.registerTool(mdPreviewReplyTool);
-	pi.registerTool(mdPreviewRevisionDoneTool);
+	// Per-factory state: OMP re-runs this factory for child sessions while reusing the loaded
+	// module, so module-global state would let siblings close or answer each other's preview.
+	const servers = createPreviewServerManager();
+	let sessionContext: ExtensionContext | null = null;
+	const messenger = createSessionMessenger(
+		(text, options) => pi.sendUserMessage(text, options),
+		() => sessionContext?.isIdle() ?? false,
+	);
+	const runtime = createPreviewRuntime(servers, messenger);
+	const { mdPreviewTool, mdPreviewReplyTool, mdPreviewRevisionDoneTool } = createPreviewTools(servers, runtime.previewMarkdown);
+
+	pi.registerTool(withOmpMetadata(mdPreviewTool));
+	pi.registerTool(withOmpMetadata(mdPreviewReplyTool));
+	pi.registerTool(withOmpMetadata(mdPreviewRevisionDoneTool));
+
+	// Idle delivery needs the live session context: `isIdle()` exists on both Pi and OMP.
+	pi.on("session_start", (_event, ctx) => {
+		sessionContext = ctx;
+	});
 
 	// ---- live Q&A progress (M1) ----
 	// Every handler is synchronous, must not throw, and is a no-op unless a preview document
 	// still has an unanswered entry: PreviewServer drops patches for documents without one.
-	pi.on("agent_start", () => publishProgress({ phase: "thinking" }));
-	pi.on("agent_end", () => currentServer()?.clearProgress());
-	pi.on("turn_start", () => publishProgress({ phase: "thinking" }));
+	pi.on("agent_start", () => runtime.publishProgress({ phase: "thinking" }));
+	pi.on("agent_end", () => servers.current()?.clearProgress());
+	pi.on("turn_start", () => runtime.publishProgress({ phase: "thinking" }));
 	pi.on("tool_execution_start", (event) => {
 		if (SELF_TOOLS.has(event.toolName)) return;
-		publishProgress({ phase: "tool", tool: event.toolName });
+		runtime.publishProgress({ phase: "tool", tool: event.toolName });
 	});
 	pi.on("tool_execution_end", (event) => {
 		if (SELF_TOOLS.has(event.toolName)) return;
-		publishProgress({ phase: "thinking" });
+		runtime.publishProgress({ phase: "thinking" });
 	});
 	pi.on("message_update", (event) => {
 		const update = event.assistantMessageEvent;
 		if (update.type === "thinking_start" || update.type === "thinking_delta") {
 			// Chain of thought is never forwarded: only the phase reaches the browser.
-			publishProgress({ phase: "thinking" });
+			runtime.publishProgress({ phase: "thinking" });
 			return;
 		}
 		if (update.type === "text_start" || update.type === "text_delta" || update.type === "text_end") {
 			const stats = textStats(event.message);
-			publishProgress({ phase: "writing", chars: stats?.chars ?? 0, snippet: stats?.tail ?? "" });
+			runtime.publishProgress({ phase: "writing", chars: stats?.chars ?? 0, snippet: stats?.tail ?? "" });
 		}
 		// toolcall_* carries no tool name worth showing: tool_execution_start reports it.
 	});
@@ -774,7 +833,7 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 				return;
 			}
 			if (!parsed.file) {
-				const docs = currentServer()?.listDocuments() ?? [];
+				const docs = servers.current()?.listDocuments() ?? [];
 				const list = docs.length
 					? docs.map((d) => `- ${d.title} (${d.filePath}, ${d.viewers} tab(s))`).join("\n")
 					: " (no documents being previewed)";
@@ -784,16 +843,16 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 					content: [
 						"Usage: `/md-preview <file path> [--host <ip>]`",
 						"",
-						"`--host <ip>` opens the browser tab at that IP instead of the bind address, e.g. `/md-preview reports/summary.md --host 192.0.2.10`. The port and the `?token=` access token are preserved. The preview server must listen on an address that covers that IP: start pi with `MD_PREVIEW_BIND=0.0.0.0` (the bind address is fixed for the whole session, so a restart is required).",
+						"`--host <ip>` opens the browser tab at that IP instead of the bind address, e.g. `/md-preview reports/summary.md --host 192.0.2.10`. The port and the `?token=` access token are preserved. The preview server must listen on an address that covers that IP: start Pi or OMP with `MD_PREVIEW_BIND=0.0.0.0` (the bind address is fixed for the whole session, so a restart is required).",
 						"",
-						"To avoid passing `--host` on every call, persist it once with `/md-preview-host <ip|hostname>` (user-level settings, shared by every pi instance); `/md-preview-host --clear` removes it. An explicit `--host` still wins per call.",
+						"To avoid passing `--host` on every call, persist it once with `/md-preview-host <ip|hostname>` (user-level settings, shared by every Pi / OMP instance); `/md-preview-host --clear` removes it. An explicit `--host` still wins per call.",
 						"",
 						`Current previews:\n${list}`,
 					].join("\n"),
 				});
 				return;
 			}
-			const outcome = await previewMarkdown(parsed.file, { cwd: ctx.cwd, notify, host: parsed.host });
+			const outcome = await runtime.previewMarkdown(parsed.file, { cwd: ctx.cwd, notify, host: parsed.host });
 			pi.sendMessage({ customType: "md_preview", display: true, content: outcome.text });
 		},
 	});
@@ -816,14 +875,14 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 			if (parsed.mode === "set") {
 				const saved = savePrefs({ browserHost: parsed.value! }); // synchronous atomic write: visible to every instance right away
 				const host = saved.browserHost!; // validation already passed, so the canonical (de-bracketed) value is non-null
-				const server = liveServer();
+				const server = runtime.liveServer();
 				// An already-running server keeps its original bind: warn (do not block) when it does not cover the new host.
 				const warn = server && needsHostWarning(server.host, host) ? hostMismatchWarning(server.host, host, server.port) : undefined;
 				if (warn) notifySafely(notify, `Markdown preview: ${warn}`, "warning");
 				notifySafely(notify, `Markdown preview: browser host set to ${host}`, "info");
 				send(
 					[
-						`Browser host saved: \`${host}\` — every preview (this and any other pi instance) opens at this host from its next preview on.`,
+						`Browser host saved: \`${host}\` — every preview (this and any other Pi / OMP instance) opens at this host from its next preview on.`,
 						...(warn ? [`Warning: ${warn}`] : []),
 						``,
 						"An explicit `--host` on `/md-preview` still overrides this per call; `/md-preview-host --clear` removes it.",
@@ -839,7 +898,7 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 			}
 			// show: report the persisted value, the value the next preview would use and its source.
 			const persisted = loadPrefs().browserHost;
-			const server = liveServer();
+			const server = runtime.liveServer();
 			const bindFallback = server
 				? localBrowserHost(server.host)
 				: localBrowserHost(envBindHost() ?? "127.0.0.1");
@@ -860,7 +919,7 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 					`- Settings file: ${prefsFilePath()}`,
 					``,
 					"Precedence: explicit `/md-preview <file> --host <ip>` > persisted setting > server bind address.",
-					"The setting is read at every preview call, so all pi instances use it from their next preview on.",
+					"The setting is read at every preview call, so all Pi / OMP instances use it from their next preview on.",
 					HOST_CMD_USAGE,
 				].join("\n"),
 			);
@@ -869,9 +928,15 @@ export default function mdPreviewExtension(pi: ExtensionAPI) {
 
 	// Safety net: never leak the preview server past the session. The server also
 	// self-exits shortly after the user closes the browser tab.
-	pi.on("session_shutdown", (event) => {
-		// shutdown() also drops the progress timer and every live progress snapshot.
-		void currentServer()?.shutdown(`pi session ended (${event.reason})`);
+	pi.on("session_shutdown", async (event) => {
+		sessionContext = null;
+		// shutdown() also drops the progress timer and every live progress snapshot. Await it so
+		// both hosts can finish cleanup before the session goes away.
+		try {
+			await servers.current()?.shutdown(`pi session ended (${event.reason})`);
+		} catch {
+			/* cleanup is best-effort; never fail session teardown */
+		}
 	});
 }
 
