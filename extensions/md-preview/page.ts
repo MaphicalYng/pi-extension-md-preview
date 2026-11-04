@@ -72,7 +72,7 @@ export interface PageOptions {
 	 * highlight wash. null/undefined (or a stale `at`) means nothing to mark.
 	 */
 	revision?: { batchId: number; highlights: string[]; at: number } | null;
-	/** POST endpoint for bottom chat messages (body { message }); omitted = no chat area rendered. */
+	/** POST endpoint for global agent chat messages (body { message }); omitted = no chat area rendered. */
 	chatUrl?: string;
 	/**
 	 * Same-origin URL of the bundled mermaid ESM runtime. The server appends the
@@ -166,12 +166,6 @@ const PAGE_CSS = `
 	--accent: #2f6feb;
 	--accent-hover: #255ed0;
 	--accent-soft: rgba(47, 111, 235, 0.09);
-	/* Chat feed tints stay deliberately faint: the conversation reads first, the
-	   color coding only whispers who said what. */
-	--chat-you-bg: rgba(47, 111, 235, 0.05);
-	--chat-you-bar: rgba(47, 111, 235, 0.4);
-	--chat-agent-bg: rgba(116, 128, 144, 0.07);
-	--chat-agent-bar: rgba(116, 128, 144, 0.3);
 	--code-bg: #f5f6f9;
 	--code-head: #eef0f4;
 	--inline-code-bg: #f0f2f6;
@@ -195,10 +189,6 @@ const PAGE_CSS = `
 	--accent: #6ea8fe;
 	--accent-hover: #8dbcff;
 	--accent-soft: rgba(110, 168, 254, 0.13);
-	--chat-you-bg: rgba(110, 168, 254, 0.09);
-	--chat-you-bar: rgba(110, 168, 254, 0.5);
-	--chat-agent-bg: rgba(255, 255, 255, 0.05);
-	--chat-agent-bar: rgba(255, 255, 255, 0.25);
 	--code-bg: #11161e;
 	--code-head: #171e28;
 	--inline-code-bg: #1a2129;
@@ -742,6 +732,9 @@ html[data-export] .toc {
 	--card-pad: 0;
 	--toc-pad: 0;
 }
+/* Exported documents keep the conversation in normal flow at every viewport size. */
+html[data-export] .chat { position: static; width: auto; max-height: none; margin-top: 32px; }
+html[data-export] .chat-list { overflow: visible; }
 
 /* Chat message bodies reuse .content only for its typography (headings, lists, code,
    tables, mermaid); the card chrome they would inherit from the article card reads as
@@ -1533,10 +1526,11 @@ html[data-export] .toc {
 	white-space: nowrap;
 }
 
-/* ---------- document chat (bottom conversation) ---------- */
+/* ---------- document chat (global agent conversation) ---------- */
 
 .chat {
-	margin-top: 32px;
+	grid-column: 1;
+	margin-top: 0;
 	border: 1px solid var(--border);
 	border-radius: 8px;
 	background: var(--bg-elev);
@@ -1544,39 +1538,49 @@ html[data-export] .toc {
 }
 .chat-head { margin-bottom: 12px; }
 .chat-title { font-weight: 650; font-size: 0.95rem; }
-.chat-list { display: flex; flex-direction: column; gap: 16px; }
+.chat-list { display: flex; flex-direction: column; gap: 20px; }
 .chat-empty { color: var(--text-3); font-size: 0.86rem; text-align: center; padding: 14px 8px; }
 /* Reversed timeline: the list reads newest first, every turn keeps its own anchor. */
-.chat-turn { display: flex; flex-direction: column; gap: 8px; }
+.chat-turn {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	padding-bottom: 20px;
+	border-bottom: 1px solid var(--border-soft);
+}
+.chat-turn:last-child { padding-bottom: 0; border-bottom: 0; }
 /* A turn arriving while the reader is looking at the conversation: 200ms rise so the new
    content does not simply appear between two reads. Boot hydration passes quiet=true and
    skips the class, because .article's own rise is already fading the whole list in. */
 .chat-turn.chat-enter { animation: chat-turn-in 200ms var(--ease) both; }
-/* Alternating rows instead of bubbles: a role chip plus a full-width tinted row
-   (accent left bar for the reader, neutral bar for the agent) tells the sides apart.
-   Row tints use the faint --chat-* vars so the blocks stay quiet. */
+/* Questions retain a crisp outline; agent replies use typography and whitespace
+   alone. Neither row has a background, keeping the conversation quiet and readable. */
 .chat-row {
 	display: flex;
 	flex-direction: column;
-	gap: 5px;
+	gap: 7px;
 	width: 100%;
-	padding: 10px 14px;
-	border-radius: 10px;
-	border-left: 3px solid transparent;
 }
-.chat-row.you { background: var(--chat-you-bg); border-left-color: var(--chat-you-bar); }
-.chat-row.agent { background: var(--chat-agent-bg); border-left-color: var(--chat-agent-bar); }
+.chat-row.you {
+	padding: 12px 14px;
+	background: transparent;
+	border: 1px solid var(--text);
+	border-radius: 8px;
+}
+.chat-row.agent {
+	padding: 0 2px;
+	background: transparent;
+	border: 0;
+}
 .chat-meta { display: flex; align-items: baseline; gap: 8px; font-size: 0.72rem; color: var(--text-3); }
 .chat-role {
 	display: inline-block;
 	font-size: 0.72rem;
 	font-weight: 650;
 	line-height: 1.6;
-	padding: 0 9px;
-	border-radius: 999px;
 }
-.chat-role.you { background: var(--accent-soft); color: var(--text); }
-.chat-role.agent { background: var(--bg-elev); color: var(--text-2); border: 1px solid var(--border-soft); }
+.chat-role.you { color: var(--text); }
+.chat-role.agent { color: var(--text-2); }
 /* The body carries the .content class for rendered Markdown, so the article's typography
    (headings, lists, quotes, inline code, .code-block, tables, mermaid) applies there
    without copying any of it. */
@@ -1630,6 +1634,24 @@ html[data-export] .toc {
 
 /* ---------- responsive ---------- */
 
+@media (min-width: 1800px) {
+	/* Use the blank viewport margin without moving or narrowing the article/TOC grid.
+	   580 = half the 1096px layout + a 32px gutter; 604 also reserves the right edge. */
+	.chat {
+		position: fixed;
+		top: calc(var(--topbar-h) + 40px);
+		left: calc(50% + 580px);
+		width: min(380px, calc(50vw - 604px));
+		max-height: calc(100vh - var(--topbar-h) - 64px);
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		z-index: 20;
+	}
+	.chat-head, .chat-input { flex-shrink: 0; }
+	.chat-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+}
+
 @media (max-width: 1279px) {
 	/* Keep every control reachable without pushing the page wider than the viewport:
 	   the controls become one horizontal strip, the brand keeps at least 28%. The
@@ -1649,6 +1671,7 @@ html[data-export] .toc {
 @media (max-width: 1080px) {
 	.layout { grid-template-columns: minmax(0, 1fr); gap: 0; padding-top: 28px; }
 	.toc { display: none; }
+	.chat { margin-top: 32px; }
 	.article { max-width: 100%; }
 	/* Single column and full width: trim the card padding so the text is not pinched. */
 	.content { padding: 28px 24px; }
@@ -1735,7 +1758,8 @@ html[data-export] .toc {
 	body { background: #fff; color: #000; }
 	.layout { display: block; padding: 0; }
 	.content, .toc { --card-bg: transparent; --card-border: 0; --card-shadow: none; --card-radius: 0; --card-pad: 0; --toc-pad: 0; }
-	.chat { border: 0; padding: 0; background: none; }
+	.chat { position: static; width: auto; max-height: none; margin-top: 32px; border: 0; padding: 0; background: none; }
+	.chat-list { overflow: visible; }
 	.code-block { break-inside: avoid; }
 	.qa-sel-bar, .queue-group, .rev-toast, .sr-only { display: none !important; }
 	.rev-flash { background: none !important; box-shadow: none !important; }
@@ -4128,6 +4152,11 @@ const PAGE_JS = `
 			var vh = window.innerHeight || 0;
 			if (!(rect.top < vh && rect.bottom > 0)) return;
 		}
+		// The wide-screen rail scrolls independently; reveal its newest-first list head too.
+		if (chatList) {
+			try { chatList.scrollTo({ top: 0, behavior: motionOK ? "smooth" : "auto" }); }
+			catch (e) { chatList.scrollTop = 0; }
+		}
 		try { target.scrollIntoView({ behavior: motionOK ? "smooth" : "auto", block: "start" }); }
 		catch (e) { target.scrollIntoView(); }
 	}
@@ -4662,16 +4691,6 @@ ${THEME_BOOT}
 		<div class="content" id="content">
 ${bodyHtml}
 		</div>
-		${chatUrl ? `<section class="chat" id="chat" aria-label="${escapeHtml(t.chatTitle)}" data-i18n-aria="chatTitle">
-			<div class="chat-head"><span class="chat-title" data-i18n="chatTitle">${escapeHtml(t.chatTitle)}</span></div>
-			<div class="chat-input" id="chatInput">
-				<textarea id="chatText" rows="3" maxlength="2000" placeholder="${escapeHtml(t.chatPlaceholder)}" data-i18n-placeholder="chatPlaceholder"></textarea>
-				<button type="button" id="chatSend" class="primary" data-i18n="chatSend">${escapeHtml(t.chatSend)}</button>
-			</div>
-			<div class="chat-list" id="chatList" role="log" aria-live="polite" aria-label="${escapeHtml(t.chatLogLabel)}" data-i18n-aria="chatLogLabel">
-				<div class="chat-empty" id="chatEmpty" data-i18n="chatEmpty">${escapeHtml(t.chatEmpty)}</div>
-			</div>
-		</section>` : ""}
 		<footer class="doc-foot">
 			<span>pi &middot; md-preview</span>
 			<span>&middot;</span>
@@ -4683,6 +4702,16 @@ ${bodyHtml}
 		<div class="toc-title" data-i18n="tocTitle">${escapeHtml(t.tocTitle)}</div>
 		<nav id="tocNav"></nav>
 	</aside>
+	${chatUrl ? `<section class="chat" id="chat" aria-label="${escapeHtml(t.chatTitle)}" data-i18n-aria="chatTitle">
+		<div class="chat-head"><span class="chat-title" data-i18n="chatTitle">${escapeHtml(t.chatTitle)}</span></div>
+		<div class="chat-input" id="chatInput">
+			<textarea id="chatText" rows="3" maxlength="2000" placeholder="${escapeHtml(t.chatPlaceholder)}" data-i18n-placeholder="chatPlaceholder"></textarea>
+			<button type="button" id="chatSend" class="primary" data-i18n="chatSend">${escapeHtml(t.chatSend)}</button>
+		</div>
+		<div class="chat-list" id="chatList" role="log" aria-live="polite" aria-label="${escapeHtml(t.chatLogLabel)}" data-i18n-aria="chatLogLabel">
+			<div class="chat-empty" id="chatEmpty" data-i18n="chatEmpty">${escapeHtml(t.chatEmpty)}</div>
+		</div>
+	</section>` : ""}
 </div>
 
 <div class="qa-sel-bar" id="qaSelBar" role="toolbar" hidden>

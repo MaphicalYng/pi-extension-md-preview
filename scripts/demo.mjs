@@ -248,10 +248,15 @@ if (smoke) {
 	if (!html.includes("QA_RAIL_GAP = 32")) failures.push("QA rail 间距常量不是 32px");
 	if (!html.includes("contentRect.left - QA_RAIL_GAP")) failures.push("QA rail 仍在使用硬编码间距");
 	if (html.includes("contentRect.left - 16")) failures.push("QA rail 残留旧的 16px 间距");
-	// Agent 卡片与正文卡片分离：.chat 也是独立卡片，间距与卡片间距一致，圆角统一到 8px
+	// 全局 Agent 对话：窄屏与正文间距 32px；宽屏进入右侧空白，不挤压正文网格。
 	const chatCss = cssRule(".chat");
-	if (!/margin-top:\s*32px/.test(chatCss)) failures.push(".chat 与正文卡片的间距不是 32px");
+	if (!/grid-column:\s*1/.test(chatCss) || !/margin-top:\s*32px/.test(chatCss)) failures.push(".chat 缺少正文下方的单列回退布局");
 	if (!/border-radius:\s*8px/.test(chatCss)) failures.push(".chat 圆角未对齐 8px");
+	if (!/position:\s*fixed/.test(chatCss) || !/left:\s*calc\(50% \+ 580px\)/.test(chatCss)) failures.push(".chat 缺少宽屏右侧栏定位");
+	const chatYouCss = cssRule(".chat-row.you");
+	if (!/background:\s*transparent/.test(chatYouCss) || !/border:\s*1px solid var\(--text\)/.test(chatYouCss)) failures.push("用户问题应为无底色描边卡片");
+	const chatAgentCss = cssRule(".chat-row.agent");
+	if (!/background:\s*transparent/.test(chatAgentCss) || !/border:\s*0/.test(chatAgentCss)) failures.push("Agent 回复应为无底色无卡片排版");
 	// 问答正文借用 .content 排版，但不得继承文章卡片的壳（边框/底色/阴影/圆角/内边距）
 	const chatBodyCss = cssRule(".chat-body.content");
 	if (!/background:\s*transparent/.test(chatBodyCss)) failures.push("chat 正文仍继承 .content 卡片底色");
