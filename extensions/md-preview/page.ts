@@ -2977,31 +2977,35 @@ const PAGE_JS = `
 		try { return new Date(t).toLocaleString(T.locale, { hour12: false }); } catch (e) { return ""; }
 	}
 
-	// Wrap the still-live Range precisely (supports selections that span elements).
+	// Wrap only the selected text nodes. Extracting the whole Range would also clone
+	// structural elements (li/tr/td) into a mark and corrupt lists and tables.
 	function highlightRange(id, range) {
 		if (!range || range.collapsed || !range.startContainer) return false;
 		if (!contentEl.contains(range.commonAncestorContainer)) return false;
-		var frag = null;
-		try {
-			frag = range.extractContents();
-			var walker = document.createTreeWalker(frag, NodeFilter.SHOW_TEXT);
-			var nodes = [], t;
-			while ((t = walker.nextNode())) if (t.nodeValue && t.nodeValue.trim()) nodes.push(t);
-			if (!nodes.length) return false;
-			for (var i = 0; i < nodes.length; i++) {
+		var walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT);
+		var segments = [], node;
+		while ((node = walker.nextNode())) {
+			if (!node.nodeValue || !range.intersectsNode(node)) continue;
+			var start = node === range.startContainer ? range.startOffset : 0;
+			var end = node === range.endContainer ? range.endOffset : node.nodeValue.length;
+			if (start >= end || !node.nodeValue.slice(start, end).trim()) continue;
+			segments.push({ node: node, start: start, end: end });
+		}
+		var wrapped = 0;
+		for (var i = 0; i < segments.length; i++) {
+			var segment = segments[i];
+			try {
+				var textRange = document.createRange();
+				textRange.setStart(segment.node, segment.start);
+				textRange.setEnd(segment.node, segment.end);
 				var mark = document.createElement("mark");
 				mark.className = "mdp-qa-hl";
 				mark.setAttribute("data-qa", id);
-				nodes[i].parentNode.insertBefore(mark, nodes[i]);
-				mark.appendChild(nodes[i]);
-			}
-			range.insertNode(frag);
-			frag = null;
-			return true;
-		} catch (err) {
-			try { if (frag && frag.childNodes.length) range.insertNode(frag); } catch (e2) { /* best-effort restore of the original content */ }
-			return false;
+				textRange.surroundContents(mark);
+				wrapped++;
+			} catch (err) { /* keep the remaining text segments highlightable */ }
 		}
+		return wrapped > 0;
 	}
 
 	// Restore cases (reload / re-render / other tabs): locate the quote in the body and wrap it.
