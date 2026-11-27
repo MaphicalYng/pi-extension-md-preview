@@ -248,11 +248,12 @@ if (smoke) {
 	if (!html.includes("QA_RAIL_GAP = 32")) failures.push("QA rail 间距常量不是 32px");
 	if (!html.includes("contentRect.left - QA_RAIL_GAP")) failures.push("QA rail 仍在使用硬编码间距");
 	if (html.includes("contentRect.left - 16")) failures.push("QA rail 残留旧的 16px 间距");
-	// 全局 Agent 对话：窄屏与正文间距 32px；宽屏进入右侧空白，不挤压正文网格。
+	// 全局 Agent 对话：窄屏与正文间距 32px；宽屏贴住内容区顶部和视口右下边缘。
 	const chatCss = cssRule(".chat");
 	if (!/grid-column:\s*1/.test(chatCss) || !/margin-top:\s*32px/.test(chatCss)) failures.push(".chat 缺少正文下方的单列回退布局");
 	if (!/border-radius:\s*8px/.test(chatCss)) failures.push(".chat 圆角未对齐 8px");
-	if (!/position:\s*fixed/.test(chatCss) || !/left:\s*calc\(50% \+ 580px\)/.test(chatCss)) failures.push(".chat 缺少宽屏右侧栏定位");
+	if (!/position:\s*fixed/.test(chatCss) || !/top:\s*var\(--topbar-h\)/.test(chatCss) || !/right:\s*0/.test(chatCss) || !/bottom:\s*0/.test(chatCss) || !/max-height:\s*none/.test(chatCss)) failures.push(".chat 宽屏布局未贴住内容区顶部和视口右下边缘");
+	if (!/width:\s*min\(480px, calc\(50vw - 580px\)\)/.test(chatCss)) failures.push(".chat 宽屏宽度上限不是 480px");
 	const chatYouCss = cssRule(".chat-row.you");
 	if (!/background:\s*transparent/.test(chatYouCss) || !/border:\s*1px solid var\(--text\)/.test(chatYouCss)) failures.push("用户问题应为无底色描边卡片");
 	const chatAgentCss = cssRule(".chat-row.agent");
