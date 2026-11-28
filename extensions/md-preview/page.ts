@@ -1635,14 +1635,15 @@ html[data-export] .chat-list { overflow: visible; }
 /* ---------- responsive ---------- */
 
 @media (min-width: 1800px) {
-	/* Use the blank viewport margin without moving or narrowing the article/TOC grid.
-	   580 = half the 1096px layout + a 32px gutter; 604 also reserves the right edge. */
+	/* Keep the article/TOC grid unchanged: the chat fills the blank right margin,
+	   flush with the content top and the viewport's bottom/right edges. */
 	.chat {
 		position: fixed;
-		top: calc(var(--topbar-h) + 40px);
-		left: calc(50% + 580px);
-		width: min(380px, calc(50vw - 604px));
-		max-height: calc(100vh - var(--topbar-h) - 64px);
+		top: var(--topbar-h);
+		right: 0;
+		bottom: 0;
+		width: min(480px, calc(50vw - 580px));
+		max-height: none;
 		margin: 0;
 		display: flex;
 		flex-direction: column;
