@@ -15,6 +15,9 @@ function resolveDeployCommit() {
 }
 
 export default {
+  esbuild: {
+    jsx: "automatic",
+  },
   define: {
     "import.meta.env.VITE_DEPLOY_COMMIT": JSON.stringify(resolveDeployCommit()),
   },
