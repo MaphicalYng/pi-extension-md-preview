@@ -167,15 +167,6 @@ button:active,
   transition: transform 200ms var(--ease-out);
 }
 
-.main-nav a:hover {
-  color: var(--ink);
-}
-
-.main-nav a:hover::after {
-  transform: scaleX(1);
-  transform-origin: left;
-}
-
 .nav-actions {
   display: flex;
   align-items: center;
@@ -245,6 +236,14 @@ button:active,
 .mobile-github {
   display: none;
 }
+
+.menu-icon {
+  display: grid;
+  grid-area: 1 / 1;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.menu-icon.is-visible { opacity: 1; }
 
 .hero {
   display: grid;
@@ -383,6 +382,15 @@ html[lang="en"] .interaction-copy h3 {
   background: rgb(255 255 255 / 7%);
 }
 
+.copy-icon svg {
+  grid-area: 1 / 1;
+  transition: opacity 120ms ease;
+}
+
+.copy-icon-check { opacity: 0; }
+.copy-icon.is-copied .copy-icon-copy { opacity: 0; }
+.copy-icon.is-copied .copy-icon-check { opacity: 1; }
+
 .copy-label {
   position: absolute;
   width: 1px;
@@ -403,10 +411,6 @@ html[lang="en"] .interaction-copy h3 {
 
 .text-link svg {
   transition: transform 180ms var(--ease-out);
-}
-
-.text-link:hover svg {
-  transform: translateX(4px);
 }
 
 .hero-proof {
@@ -1060,7 +1064,6 @@ html[lang="en"] .interaction-copy h3 {
 
 .interaction-copy {
   padding: 55px 60px;
-  animation: content-in 300ms var(--ease-out) both;
 }
 
 .interaction-copy h3 {
@@ -1093,13 +1096,8 @@ html[lang="en"] .interaction-copy h3 {
   transition: transform 180ms var(--ease-out);
 }
 
-.interaction-copy > a:hover svg {
-  transform: translateX(4px);
-}
-
 .conversation-demo {
   padding: 40px 60px 40px 0;
-  animation: content-in 300ms var(--ease-out) both;
 }
 
 .conversation-paper {
@@ -1343,7 +1341,7 @@ html[lang="en"] .interaction-copy h3 {
   background: rgb(255 255 255 / 40%);
   font-size: 9px;
   cursor: pointer;
-  transition: border-color 180ms ease, color 180ms ease, transform 150ms var(--ease-out);
+  transition: border-color 180ms ease, color 180ms ease, background-color 240ms ease, transform 150ms var(--ease-out);
 }
 
 .reading-controls button span {
@@ -1382,7 +1380,6 @@ html[lang="en"] .interaction-copy h3 {
   font-size: 28px;
   font-weight: 400;
   letter-spacing: -1px;
-  transition: font-size 220ms var(--ease-out);
 }
 
 .reading-sample.is-large .reading-sample-content h4 {
@@ -1395,6 +1392,7 @@ html[lang="en"] .interaction-copy h3 {
   font-family: var(--serif);
   font-size: 10px;
   line-height: 1.9;
+  transition: color 240ms ease;
 }
 
 .is-dark .reading-sample-content p {
@@ -2108,6 +2106,13 @@ html[lang="en"] .interaction-copy h3 {
 }
 
 @media (hover: hover) and (pointer: fine) {
+  .main-nav a:hover { color: var(--ink); }
+  .main-nav a:hover::after {
+    transform: scaleX(1);
+    transform-origin: left;
+  }
+  .text-link:hover svg { transform: translateX(4px); }
+  .interaction-copy > a:hover svg { transform: translateX(4px); }
   .github-link:hover { color: var(--blue); transform: translateY(-1px); }
   .selection-action:hover { transform: translateY(-2px); }
   .interaction-tabs button:hover:not(.active) { color: #343b37; background: rgb(255 255 255 / 45%); }
@@ -2303,4 +2308,6 @@ html[lang="en"] .interaction-copy h3 {
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  .agent-answer, .main-nav { transition: opacity 200ms ease !important; }
+  .menu-icon { transition: opacity 120ms ease !important; }
 }

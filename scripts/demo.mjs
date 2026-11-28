@@ -303,6 +303,8 @@ if (smoke) {
 	// 导出 HTML：工具栏按钮 + 离线运行时（EXPORT_JS）已注入页面脚本。
 	if (!html.includes('id="exportBtn"')) failures.push("页面缺少导出按钮");
 	if (!html.includes("离线导出")) failures.push("页面未注入导出运行时标记（离线导出）");
+	const toTopBindingCount = (html.match(/toTop\.addEventListener\(\\?"click\\?"/g) || []).length;
+	if (toTopBindingCount !== 2) failures.push(`在线与离线运行时返回顶部绑定数量异常（期望 2，实际 ${toTopBindingCount}）`);
 
 	const index = await fetch(serverUrl("/"));
 	if (!index.ok) failures.push(`GET / -> ${index.status}`);

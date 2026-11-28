@@ -56,7 +56,10 @@ function CopyCommand({ dark = false, compact = false, t }) {
     >
       {!compact && <span className="command-prompt">$</span>}
       <code>{INSTALL}</code>
-      <span className="copy-icon">{copied ? <Check size={17} /> : <Copy size={17} />}</span>
+      <span className={`copy-icon ${copied ? "is-copied" : ""}`}>
+        <Copy className="copy-icon-copy" size={17} />
+        <Check className="copy-icon-check" size={17} />
+      </span>
       <span className="copy-label">{copied ? t.common.copied : t.common.copy}</span>
     </button>
   );
@@ -100,7 +103,8 @@ function Header({ lang, onToggleLanguage, t }) {
           </a>
           <a className="button button--small button--ink" href="#install">{t.nav.cta} <ArrowUpRight size={15} /></a>
           <button className="menu-button" onClick={() => setOpen(!open)} aria-expanded={open} aria-label={t.nav.menu}>
-            {open ? <X size={22} /> : <Menu size={22} />}
+            <span className={`menu-icon${open ? '' : ' is-visible'}`} aria-hidden="true"><Menu size={22} /></span>
+            <span className={`menu-icon${open ? ' is-visible' : ''}`} aria-hidden="true"><X size={22} /></span>
           </button>
         </div>
       </div>

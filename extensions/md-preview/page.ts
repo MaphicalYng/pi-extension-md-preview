@@ -772,6 +772,11 @@ html[data-export] .chat-list { overflow: visible; }
 	from { opacity: 0; transform: translateY(6px); }
 }
 
+/* Only the answer body fades when pending becomes answered; the existing turn stays still. */
+@keyframes chat-answer-in {
+	from { opacity: 0; }
+}
+
 /* Ask / revise panel: anchored to the selection button's top-left corner, so the scale
    starts from the control the reader just pressed. */
 @keyframes qa-panel-in {
@@ -1037,6 +1042,16 @@ html[data-export] .chat-list { overflow: visible; }
 .content .mermaid-rendered { text-align: center; }
 .content pre.mermaid svg,
 .content .mermaid-rendered svg { max-width: 100%; height: auto; }
+.content .mermaid-rendered.mermaid-enter {
+	animation: mmd-enter 160ms var(--ease) both;
+}
+html[data-export] .content .mermaid-rendered.mermaid-enter {
+	animation: none;
+}
+@keyframes mmd-enter {
+	from { opacity: 0; }
+	to { opacity: 1; }
+}
 
 /* Loading: pulse the placeholder pre (escaped source). */
 .content pre.mermaid[data-status="loading"] { animation: mmdPulse 1.3s ease-in-out infinite; }
@@ -1585,6 +1600,7 @@ html[data-export] .chat-list { overflow: visible; }
    (headings, lists, quotes, inline code, .code-block, tables, mermaid) applies there
    without copying any of it. */
 .chat-body { font-size: 0.93em; word-break: break-word; }
+.chat-body.content.chat-answer-enter { animation: chat-answer-in 160ms var(--ease) both; }
 .chat-body > :first-child { margin-top: 0.2em; }
 .chat-body > :last-child { margin-bottom: 0.2em; }
 /* Plain-text fallback when the server sent no questionHtml; keeps the old bubble line breaks. */
@@ -1744,6 +1760,9 @@ html[data-export] .chat-list { overflow: visible; }
 	.toast, .rev-toast, .to-top {
 		transition: opacity 0.2s ease !important;
 	}
+	.chat-body.content.chat-answer-enter {
+		animation: chat-answer-in 160ms var(--ease) both !important;
+	}
 
 	/* Pure-opacity "still working" indicators: zero motion, they must keep pulsing. */
 	.content pre.mermaid[data-status="loading"] {
@@ -1755,6 +1774,7 @@ html[data-export] .chat-list { overflow: visible; }
 }
 
 @media print {
+	.content .mermaid-rendered.mermaid-enter { animation: none; }
 	.progress, .topbar, .toc, .to-top, .toast, .copy-btn, .heading-anchor, .qa-rail, .qa-sel-btn, .qa-panel, .chat-input { display: none !important; }
 	body { background: #fff; color: #000; }
 	.layout { display: block; padding: 0; }
@@ -1963,7 +1983,10 @@ const EXPORT_JS = `
 
 	var toTop = document.getElementById("toTop");
 	var topbar = document.getElementById("topbar");
-	if (toTop) toTop.addEventListener("click", function () { window.scrollTo(0, 0); });
+	if (toTop) toTop.addEventListener("click", function () {
+		var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+		window.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
+	});
 	function onScroll() {
 		var y = window.pageYOffset || root.scrollTop || 0;
 		if (toTop) toTop.classList.toggle("show", y > 600);
@@ -1979,7 +2002,8 @@ const PAGE_JS = `
 	"use strict";
 	var DOC = window.__MDP__ || {};
 	var root = document.documentElement;
-	var motionOK = !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+	var motionPreference = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+	function motionOK() { return !motionPreference || !motionPreference.matches; }
 
 	/* ---------- i18n: UI language + localized strings ---------- */
 
@@ -2458,7 +2482,7 @@ const PAGE_JS = `
 		e.preventDefault();
 		var el = document.getElementById(a.getAttribute("data-target"));
 		if (el) {
-			el.scrollIntoView({ behavior: motionOK ? "smooth" : "auto", block: "start" });
+			el.scrollIntoView({ behavior: motionOK() ? "smooth" : "auto", block: "start" });
 			if (history.replaceState) history.replaceState(null, "", "#" + encodeURIComponent(a.getAttribute("data-target")));
 		}
 	});
@@ -2494,7 +2518,7 @@ const PAGE_JS = `
 	window.addEventListener("scroll", onScroll, { passive: true });
 	window.addEventListener("resize", onScroll);
 	toTop.addEventListener("click", function () {
-		window.scrollTo({ top: 0, behavior: motionOK ? "smooth" : "auto" });
+		window.scrollTo({ top: 0, behavior: motionOK() ? "smooth" : "auto" });
 	});
 
 	/* ---------- syntax highlighting (conservative tokenizer) ---------- */
@@ -2700,7 +2724,7 @@ const PAGE_JS = `
 	// Render one block: on success an adjacent div.mermaid-rendered carries the svg and
 	// the pre is hidden as a source backup; on failure the escaped source stays visible.
 	// Never throws outwards.
-	function renderMermaidOne(mermaid, pre) {
+	function renderMermaidOne(mermaid, pre, animate) {
 		try {
 			var id = "mmd-" + (++mermaidSeq);
 			mermaid.render(id, pre.textContent).then(function (r) {
@@ -2708,7 +2732,7 @@ const PAGE_JS = `
 				// The pre may have been replaced by an SSE update; do not insert into the DOM then.
 				if (!svg || !pre.parentNode) throw new Error("mermaid empty svg");
 				var box = document.createElement("div");
-				box.className = "mermaid-rendered";
+				box.className = animate ? "mermaid-rendered mermaid-enter" : "mermaid-rendered";
 				box.innerHTML = svg;
 				pre.parentNode.insertBefore(box, pre.nextSibling);
 				pre.style.display = "none";
@@ -2728,7 +2752,7 @@ const PAGE_JS = `
 	}
 
 	// Render pre.mermaid nodes inside scope that are still unprocessed (no data-mmd marker).
-	function renderMermaidBlocks(scope) {
+	function renderMermaidBlocks(scope, animate) {
 		var list = [];
 		try {
 			var nodes = (scope || document).querySelectorAll("pre.mermaid");
@@ -2751,7 +2775,7 @@ const PAGE_JS = `
 				mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: theme });
 				mermaidTheme = theme;
 			}
-			for (var i = 0; i < list.length; i++) renderMermaidOne(mermaid, list[i]);
+			for (var i = 0; i < list.length; i++) renderMermaidOne(mermaid, list[i], animate);
 		}).catch(function (e) {
 			// mermaid failed to load/initialize: fall back to source view for every block
 			for (var i = 0; i < list.length; i++) {
@@ -2779,7 +2803,7 @@ const PAGE_JS = `
 				pre.removeAttribute("data-mmd");
 				pre.removeAttribute("data-status");
 			}
-			renderMermaidBlocks(document);
+			renderMermaidBlocks(document, false);
 		} catch (e) {
 			console.warn("[md-preview] mermaid theme re-render failed:", e);
 		}
@@ -2851,7 +2875,7 @@ const PAGE_JS = `
 		}
 		buildToc(d.toc || []);
 		enhanceCode(content);
-		renderMermaidBlocks(content);
+		renderMermaidBlocks(content, true);
 		// A finished batch may ride along with the update: adopt it silently and let the
 		// replay below relight the freshly rendered blocks. The toast belongs to the
 		// revision-done listener so a replayed frame never double-announces. A payload
@@ -2923,7 +2947,7 @@ const PAGE_JS = `
 			try {
 				var qa = JSON.parse(e.data);
 				// Chat entries (quote === "") go to the bottom conversation area; the qa rail path below is untouched.
-				if (qa.chat) { addChat(qa); return; }
+				if (qa.chat) { addChat(qa, false, false); return; }
 				// Echo of a batch item while this tab's POST is still in flight: render the
 				// "sending" label until the POST settles.
 				if (QBUSY.ask && !qaState[qa.id]) qa.pending = "send";
@@ -4138,7 +4162,7 @@ const PAGE_JS = `
 	// Copy buttons, syntax highlighting and mermaid are scoped to this one turn, so
 	// neither the article body nor the qa rail is touched.
 	function enhanceChatTurn(turn) {
-		try { enhanceCode(turn); renderMermaidBlocks(turn); } catch (e) { /* enhancements are best-effort */ }
+		try { enhanceCode(turn); renderMermaidBlocks(turn, true); } catch (e) { /* enhancements are best-effort */ }
 	}
 
 	// Reversed timeline: the newest message sits at the top of the list, right under
@@ -4155,10 +4179,10 @@ const PAGE_JS = `
 		}
 		// The wide-screen rail scrolls independently; reveal its newest-first list head too.
 		if (chatList) {
-			try { chatList.scrollTo({ top: 0, behavior: motionOK ? "smooth" : "auto" }); }
+			try { chatList.scrollTo({ top: 0, behavior: motionOK() ? "smooth" : "auto" }); }
 			catch (e) { chatList.scrollTop = 0; }
 		}
-		try { target.scrollIntoView({ behavior: motionOK ? "smooth" : "auto", block: "start" }); }
+		try { target.scrollIntoView({ behavior: motionOK() ? "smooth" : "auto", block: "start" }); }
 		catch (e) { target.scrollIntoView(); }
 	}
 
@@ -4178,8 +4202,8 @@ const PAGE_JS = `
 	}
 
 	// Idempotent by id: the SSE echo and the POST response race, whichever lands first wins.
-	// quiet = true (boot hydration) keeps the initial viewport where the reader expects it.
-	function addChat(entry, quiet) {
+	// quiet = true suppresses entry animation; reveal = false forbids background scrolling.
+	function addChat(entry, quiet, reveal) {
 		if (!entry || !entry.id || !chatList) return;
 		var known = chatState[entry.id];
 		if (known) {
@@ -4201,7 +4225,7 @@ const PAGE_JS = `
 		if (!quiet) turn.classList.add("chat-enter");
 		insertChatTurn(turn, entry);
 		enhanceChatTurn(turn);
-		chatScrollTop(!quiet);
+		if (reveal !== false) chatScrollTop(!quiet);
 	}
 
 	function refreshChat(id) {
@@ -4211,8 +4235,13 @@ const PAGE_JS = `
 		if (!turn) return;
 		// The reply refreshes in place under its question, so this must not scroll: a reader
 		// parked further down the reversed timeline would otherwise be yanked around.
+		var wasPending = turn.classList.contains("pending");
 		turn.classList.toggle("pending", !entry.answerHtml);
 		turn.innerHTML = chatTurnInnerHtml(entry);
+		if (wasPending && entry.answerHtml) {
+			var answer = turn.querySelector(".chat-body.content");
+			if (answer) answer.classList.add("chat-answer-enter");
+		}
 		enhanceChatTurn(turn);
 	}
 
@@ -4224,7 +4253,7 @@ const PAGE_JS = `
 		for (var i = 0; i < list.length; i++) {
 			var item = list[i];
 			if (!item || !item.chat || !item.id) continue;
-			addChat(item);
+			addChat(item, true, false);
 		}
 	}
 
@@ -4505,7 +4534,7 @@ const PAGE_JS = `
 	setLineHeight(lineHeight);
 	buildToc(DOC.toc || []);
 	enhanceCode(document);
-	renderMermaidBlocks(document);
+	renderMermaidBlocks(document, true);
 	var bootQa = DOC.qa || [];
 	for (var bi = 0; bi < bootQa.length; bi++) {
 		// quiet = true: hydrating history on load must not yank the page down to the chat area.

@@ -206,7 +206,7 @@ for (const [label, html] of [
 }
 check(!en.includes('id="chatInput"'), "render without chatUrl must not contain the chat area");
 check(pageSrc.includes('removeInClone(clone, ["chatInput"])'), "export does not strip the chat input area");
-check(pageSrc.includes("if (qa.chat) { addChat(qa); return; }"), "ask SSE does not route chat entries to the chat area");
+check(pageSrc.includes("if (qa.chat) { addChat(qa, false, false); return; }"), "ask SSE does not route chat entries to the chat area without background scrolling");
 check(pageSrc.includes("chatState[d.id]"), "answer SSE does not route chat replies");
 
 /* 5b. Content-level i18n anchors: admonition titles need labels in both bundles. */
