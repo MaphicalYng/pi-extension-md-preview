@@ -149,7 +149,7 @@ export const translations = {
       ompTerminal: "OMP 安装",
       ompTrial: "或从仓库临时加载，不写入配置",
     },
-    footer: { tagline: "Made for thoughtful work with Pi.", top: "回到顶部 ↑" },
+    footer: { tagline: "Made for thoughtful work with Pi.", top: "回到顶部 ↑", baseline: "部署基线" },
   },
   en: {
     meta: {
@@ -293,6 +293,6 @@ export const translations = {
       ompTerminal: "Install for OMP",
       ompTrial: "Or load it from a checkout without changing your settings",
     },
-    footer: { tagline: "Made for thoughtful work with Pi.", top: "Back to top ↑" },
+    footer: { tagline: "Made for thoughtful work with Pi.", top: "Back to top ↑", baseline: "Deployment baseline" },
   },
 };

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -34,6 +34,8 @@ import { getInitialLanguage, LANGUAGE_STORAGE_KEY, translations } from "./i18n.j
 
 const GITHUB = "https://github.com/MaphicalYng/pi-extension-md-preview";
 const INSTALL = "pi install npm:pi-md-preview@0.5.0";
+const DEPLOY_COMMIT = import.meta.env.VITE_DEPLOY_COMMIT;
+const HAS_DEPLOY_COMMIT = /^[0-9a-f]{40}$/.test(DEPLOY_COMMIT);
 
 function CopyCommand({ dark = false, compact = false, t }) {
   const [copied, setCopied] = useState(false);
@@ -50,6 +52,7 @@ function CopyCommand({ dark = false, compact = false, t }) {
 
   return (
     <button
+      type="button"
       className={`copy-command ${dark ? "copy-command--dark" : ""} ${compact ? "copy-command--compact" : ""}`}
       onClick={copy}
       aria-label={copied ? t.common.installCopied : t.common.copyInstall}
@@ -95,14 +98,14 @@ function Header({ lang, onToggleLanguage, t }) {
           <a className="mobile-github" href={GITHUB} target="_blank" rel="noreferrer">GitHub <ArrowUpRight size={16} /></a>
         </nav>
         <div className="nav-actions">
-          <button className="language-switch" onClick={onToggleLanguage} aria-label={t.nav.language} title={t.nav.language}>
+          <button type="button" className="language-switch" onClick={onToggleLanguage} aria-label={t.nav.language} title={t.nav.language}>
             <Languages size={15} /><span>{lang === "zh" ? "EN" : "中"}</span>
           </button>
           <a className="github-link" href={GITHUB} target="_blank" rel="noreferrer" aria-label={t.nav.github}>
             <Github size={19} />
           </a>
           <a className="button button--small button--ink" href="#install">{t.nav.cta} <ArrowUpRight size={15} /></a>
-          <button className="menu-button" onClick={() => setOpen(!open)} aria-expanded={open} aria-label={t.nav.menu}>
+          <button type="button" className="menu-button" onClick={() => setOpen(!open)} aria-expanded={open} aria-label={t.nav.menu}>
             <span className={`menu-icon${open ? '' : ' is-visible'}`} aria-hidden="true"><Menu size={22} /></span>
             <span className={`menu-icon${open ? ' is-visible' : ''}`} aria-hidden="true"><X size={22} /></span>
           </button>
@@ -117,7 +120,7 @@ function ProductPreview({ t }) {
   const tocHrefs = ["experience", "features", "workflow", "install"];
 
   return (
-    <div className="product-stage" aria-label={t.preview.label}>
+    <div className="product-stage" role="region" aria-label={t.preview.label}>
       <div className="stage-note stage-note--top"><span /> LOCAL PREVIEW <ShieldCheck size={13} /></div>
       <div className="browser-window">
         <div className="browser-bar">
@@ -142,7 +145,7 @@ function ProductPreview({ t }) {
             <hr />
             <h4><span>01</span> {t.preview.summary}</h4>
             <p>{t.preview.paragraphA} <b>87%</b> {t.preview.paragraphB} <mark>31%</mark> {t.preview.paragraphC}</p>
-            <button className={`selection-action ${asked ? "is-asked" : ""}`} onClick={() => setAsked(!asked)}>
+            <button type="button" className={`selection-action ${asked ? "is-asked" : ""}`} onClick={() => setAsked(!asked)}>
               <Sparkles size={12} /> {asked ? t.preview.hideAnswer : t.preview.ask}
             </button>
             <div className="doc-table">
@@ -151,7 +154,7 @@ function ProductPreview({ t }) {
               <div className="doc-tr"><span>{t.preview.errors}</span><span>0.42%</span><span>0.11%</span><b>−74%</b></div>
             </div>
             <div className={`agent-answer ${asked ? "is-visible" : ""}`}>
-              <div className="answer-head"><span><Sparkles size={12} /> Agent</span><button onClick={() => setAsked(false)} aria-label={t.preview.closeAnswer}><X size={12} /></button></div>
+              <div className="answer-head"><span><Sparkles size={12} /> Agent</span><button type="button" onClick={() => setAsked(false)} aria-label={t.preview.closeAnswer}><X size={12} /></button></div>
               <p>{t.preview.answer}</p>
               <div className="answer-foot"><CheckCircle2 size={11} /> {t.preview.justNow}</div>
             </div>
@@ -185,7 +188,7 @@ function InteractionShowcase({ t }) {
     <div className="interaction-shell">
       <div className="interaction-tabs" role="tablist" aria-label={t.interaction.tablist}>
         {interactionTabs.map(({ id, icon: Icon }) => (
-          <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => changeTab(id)}><Icon size={16} />{t.interaction.tabs[id]}</button>
+          <button type="button" key={id} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => changeTab(id)}><Icon size={16} />{t.interaction.tabs[id]}</button>
         ))}
       </div>
       <div className="interaction-content">
@@ -206,7 +209,7 @@ function InteractionShowcase({ t }) {
                 <div><strong>Agent <span>{t.interaction.justNow}</span></strong><p>{content.answer}</p></div>
               </div>
             ) : (
-              <button className="send-demo" onClick={() => setSent(true)}><Send size={14} /> {t.interaction.send} <span>↵</span></button>
+              <button type="button" className="send-demo" onClick={() => setSent(true)}><Send size={14} /> {t.interaction.send} <span>↵</span></button>
             )}
           </div>
           <div className="demo-hint"><Zap size={13} /> {sent ? t.interaction.sentHint : t.interaction.idleHint}</div>
@@ -225,8 +228,8 @@ function ReadingCard({ t }) {
       <div className="feature-heading"><span className="feature-icon"><Palette size={19} /></span><div><h3>{t.features.readingTitle}</h3><p>{t.features.readingDescription}</p></div></div>
       <div className={`reading-sample ${dark ? "is-dark" : ""} ${large ? "is-large" : ""}`}>
         <div className="reading-controls">
-          <button onClick={() => setDark(!dark)} aria-label={t.features.theme}>{dark ? <Moon size={15} /> : <Sun size={15} />}</button>
-          <button onClick={() => setLarge(!large)} aria-label={t.features.fontSize}>A<span>A</span></button>
+          <button type="button" onClick={() => setDark(!dark)} aria-label={t.features.theme}>{dark ? <Moon size={15} /> : <Sun size={15} />}</button>
+          <button type="button" onClick={() => setLarge(!large)} aria-label={t.features.fontSize}>A<span>A</span></button>
           <span className="reading-color" />
         </div>
         <div className="reading-sample-content"><span>DESIGN NOTES</span><h4>Less, but better.</h4><p>{t.features.sampleA}<br />{t.features.sampleB}</p><i /><i /><i /></div>
@@ -353,6 +356,13 @@ function App() {
         <a className="brand" href="#top"><img src={logoUrl} alt="" /><span>md-preview</span></a>
         <p>{t.footer.tagline}</p>
         <div><span>MIT License</span><a href={GITHUB} target="_blank" rel="noreferrer">GitHub <ArrowUpRight size={13} /></a><a href="#top">{t.footer.top}</a></div>
+        {HAS_DEPLOY_COMMIT ? (
+          <a className="deployment-baseline" href={`${GITHUB}/commit/${DEPLOY_COMMIT}`} target="_blank" rel="noreferrer" title={DEPLOY_COMMIT} aria-label={`${t.footer.baseline}: ${DEPLOY_COMMIT}`}>
+            <span>{t.footer.baseline}</span><code>{DEPLOY_COMMIT.slice(0, 12)}</code><ArrowUpRight size={12} />
+          </a>
+        ) : (
+          <span className="deployment-baseline"><span>{t.footer.baseline}</span><code>unknown</code></span>
+        )}
       </footer>
     </>
   );

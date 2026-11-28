@@ -2050,6 +2050,8 @@ html[lang="en"] .interaction-copy h3 {
   grid-template-columns: 1fr 1fr 1fr;
   align-items: center;
   min-height: 110px;
+  padding-block: 28px 20px;
+  row-gap: 18px;
   border-top: 1px solid var(--line);
 }
 
@@ -2083,6 +2085,21 @@ html[lang="en"] .interaction-copy h3 {
   display: flex;
   align-items: center;
   gap: 3px;
+}
+
+.deployment-baseline {
+  grid-column: 1 / -1;
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #9a9d97;
+  font-size: 9px;
+}
+
+.deployment-baseline code {
+  color: #6f746d;
+  font-family: var(--mono);
 }
 
 @keyframes fade-up {
